@@ -63,6 +63,7 @@ class UdevMonitor(threading.Thread):
                     event.get("SUBSYSTEM") == "block"
                     and event.get("ACTION") in _RELEVANT_ACTIONS
                     and event.get("DEVTYPE") in _RELEVANT_DEVTYPES
+                    and self._is_usb_path(event.get("DEVPATH", ""))
                 ):
                     self.trigger()
         finally:
@@ -70,6 +71,12 @@ class UdevMonitor(threading.Thread):
             with self._lock:
                 self._debounce.cancel()
             log.info("uevent 监听已停止")
+
+    @staticmethod
+    def _is_usb_path(devpath: str) -> bool:
+        """USB 存储的 sysfs 路径必经过 usb 子系统（如 .../usb2/2-1/.../block/sdh），
+        借此排除 md/loop/dm 及内置 SATA/NVMe 盘的 block 事件，避免无关 change 触发重扫。"""
+        return "/usb" in devpath.lower()
 
     @staticmethod
     def _parse(data: bytes) -> dict[str, str] | None:

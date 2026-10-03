@@ -9,6 +9,7 @@ const state = {
   rememberEnabled: false,
   share: null,
   evtSource: null,
+  lastSig: null,
 };
 
 // ------------------------------------------------------------ 工具
@@ -75,6 +76,7 @@ async function loadVersion() {
 
 function showLogin() {
   closeEvents();
+  state.lastSig = null;
   $("#app").hidden = true;
   $("#login").hidden = false;
   $("#login-error").hidden = true;
@@ -204,6 +206,10 @@ function closeEvents() {
 async function refreshDisks() {
   try {
     const snap = await api("GET", "/api/disks");
+    // 数据无变化不重绘：避免卡片闪烁，也避免清空用户正在输入的解锁密码
+    const sig = JSON.stringify(snap);
+    if (sig === state.lastSig) return;
+    state.lastSig = sig;
     state.disks = snap.disks || [];
     state.rememberEnabled = !!snap.rememberEnabled;
     render();

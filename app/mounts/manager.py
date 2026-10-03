@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -51,6 +52,8 @@ class MountManager:
         self._volumes: dict[str, VolumeRuntime] = {}
         self._volume_locks: dict[str, asyncio.Lock] = {}
         self._scan_lock = asyncio.Lock()
+        # 上次对外快照签名：内容无变化的重扫不推送，避免前端无谓重绘
+        self._last_snapshot_sig: str | None = None
 
     # ------------------------------------------------------------------ 快照
 
@@ -127,7 +130,15 @@ class MountManager:
                             rt.error = str(exc)
                             log.warning("卷 %s 自动解锁失败：%s", part.path, exc)
 
-            await self._notify(reason)
+            # 只有对外快照真的变化时才推送：定时兜底扫描与无关 uevent
+            # （NAS 上 md/loop/dm 的 block change）不会再引起前端重绘
+            sig = json.dumps(
+                self.snapshot(), sort_keys=True, ensure_ascii=False,
+                separators=(",", ":"), default=str,
+            )
+            if sig != self._last_snapshot_sig:
+                self._last_snapshot_sig = sig
+                await self._notify(reason)
 
     # ------------------------------------------------------------------ 解锁
 
