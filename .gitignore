@@ -13,6 +13,9 @@ wheels/
 .env
 *.env
 
+# 含硬编码凭据的本地脚本，禁止入库
+ghcr_cleanup.py
+
 # 运行时数据（挂载点、密钥、日志等）
 data/
 data-test/
