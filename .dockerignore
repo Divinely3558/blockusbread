@@ -1,0 +1,27 @@
+# 版本控制
+.git
+.gitignore
+
+# Python 缓存与虚拟环境（容器内由 uv 重新创建）
+.venv
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# 本地数据与密钥
+data/
+data-test/
+.env
+*.env
+
+# IDE / 编辑器
+.idea/
+.vscode/
+
+# Docker 自身文件（运行时无需进入镜像）
+Dockerfile
+.dockerignore
+docker-compose.yml

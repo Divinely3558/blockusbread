@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>BlockUSBRead · 磁盘管理</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <link rel="icon" type="image/svg+xml" href="/static/icons/favicon.svg">
+</head>
+<body>
+
+<!-- 登录页 -->
+<div id="login" hidden>
+  <div class="login-bg" aria-hidden="true">
+    <span class="blob blob-a"></span>
+    <span class="blob blob-b"></span>
+    <span class="blob blob-c"></span>
+  </div>
+  <form id="login-form" class="login-card">
+    <div class="login-brand">
+      <img class="logo-img logo-img-lg" src="/static/icons/logo.svg" alt="BlockUSBRead">
+      <h1>BlockUSBRead</h1>
+    </div>
+    <div id="login-error" class="wrong" hidden></div>
+    <label class="field">
+      <span>账号</span>
+      <input id="login-username" type="text" autocomplete="username" placeholder="请输入账号" required>
+    </label>
+    <label class="field">
+      <span>密码</span>
+      <input id="login-password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+    </label>
+    <button class="btn primary block" type="submit">
+      <span>登 录</span>
+    </button>
+    <p class="login-version">v<span id="login-version">…</span></p>
+  </form>
+</div>
+
+<!-- 主界面 -->
+<div id="app" hidden>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img class="logo-img" src="/static/icons/logo.svg" alt="">
+        <span class="brand-text">BlockUSBRead</span>
+      </div>
+      <nav class="topnav">
+        <button class="btn ghost" id="btn-refresh" title="重新扫描设备"><i class="ic ic-refresh"></i>刷新设备</button>
+        <button class="btn danger" id="btn-logout">退出</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="global-banner" class="banner" hidden></div>
+    <div id="share-banner" class="banner info" hidden></div>
+    <div class="page-head">
+      <h2>外接存储</h2>
+      <p>插入 USB 硬盘后自动识别；BitLocker 卷解锁后通过 SMB 共享访问</p>
+    </div>
+    <div id="disk-list"></div>
+  </main>
+</div>
+
+<div id="toast-container"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+[project]
+name = "blockusbread"
+version = "0.1.0"
+description = "在 Docker 中解密挂载 BitLocker USB 硬盘，并通过 Samba 共享读取"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.142.2",
+    "uvicorn[standard]>=0.54.0",
+    "itsdangerous>=2.2.0",
+    "cryptography>=45.0.0",
+]
