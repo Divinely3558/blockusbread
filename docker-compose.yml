@@ -25,7 +25,8 @@ services:
       ADMIN_USER: ${ADMIN_USER:-admin}
       # 必填：管理员密码（管理页 + SMB 共用；改密码改这里后重建容器即可）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?请在 .env 或环境变量中设置 ADMIN_PASSWORD}
-      # 选填：设置后“记住此卷”才可用（凭据加密密钥），建议使用长随机串
+      # 选填：「记住此卷」凭据加密密钥。留空即可——首次启动会自动在
+      # data/.secret_key 生成持久化随机密钥；手动指定则优先用此值（一经使用请勿更换）
       SECRET_KEY: ${SECRET_KEY:-}
       # 日志级别：INFO / DEBUG
       LOG_LEVEL: ${LOG_LEVEL:-INFO}

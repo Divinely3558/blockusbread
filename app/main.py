@@ -34,13 +34,14 @@ async def lifespan(app: FastAPI):
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     config.MOUNT_ROOT.mkdir(parents=True, exist_ok=True)
 
-    # 凭据存储（SECRET_KEY 未设置则记忆功能禁用）
-    secrets = None
-    if settings.remember_enabled:
-        secrets = SecretsStore(config.SECRETS_DATABASE, settings.fernet_key)
-        log.info("已启用「记住此卷」加密存储 %s", config.SECRETS_DATABASE)
+    # 凭据存储：SECRET_KEY 环境变量优先，未设置时已自动生成持久化密钥
+    if settings.key_source == "env":
+        log.info("凭据加密密钥来自环境变量 SECRET_KEY")
     else:
-        log.warning("未设置 SECRET_KEY，「记住此卷」功能禁用")
+        log.info("未设置 SECRET_KEY，使用自动生成的持久化密钥 %s（请勿删除该文件）",
+                 config.SECRET_KEY_FILE)
+    secrets = SecretsStore(config.SECRETS_DATABASE, settings.fernet_key)
+    log.info("已启用「记住此卷」加密存储 %s", config.SECRETS_DATABASE)
 
     bus = EventBus()
     sessions = SessionStore(settings.session_signing_key)

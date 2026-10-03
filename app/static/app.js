@@ -341,12 +341,9 @@ function renderActionPanel(p) {
             <input type="checkbox" class="rw-check">
             以读写模式解锁（默认只读；写入 BitLocker/NTFS 存在损坏风险）
           </label>
-          <label class="checkline" title="${state.rememberEnabled ? "" : "未设置 SECRET_KEY，功能不可用"}">
-            <input type="checkbox" class="remember-check"
-                   ${state.rememberEnabled ? "" : "disabled"}>
-            记住此卷（${state.rememberEnabled
-              ? "凭据加密保存，插入/重启后自动解锁"
-              : "需设置 SECRET_KEY"}）
+          <label class="checkline">
+            <input type="checkbox" class="remember-check">
+            记住此卷（凭据加密保存，插入/重启后自动解锁）
           </label>
         </div>
         <button class="btn primary unlock-submit"
