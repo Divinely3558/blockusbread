@@ -1,3 +1,5 @@
+<!-- markdownlint-disable-file -->
+
 # BlockUSBRead
 
 在 Docker 容器中解密并挂载 BitLocker USB 硬盘，通过网页管理、用 **SMB 共享**读取文件。
