@@ -17,15 +17,27 @@ _LSBLK_COLUMNS = (
 _PART_NUMBER_RE = re.compile(r"(\d+)$")
 
 
+def _decode(raw: bytes) -> str:
+    """命令输出解码：优先 UTF-8；Windows 中文环境的卷标/型号常为 GBK，
+    UTF-8 失败时尝试 GBK；仍失败则替换非法字节，保证扫描绝不因编码崩溃。"""
+    for encoding in ("utf-8", "gbk"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
 def _run(cmd: list[str], timeout: int = 20) -> str:
+    # 按字节读取后自行解码：text=True 会强制 UTF-8 strict，遇到 GBK 卷标直接抛异常
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, check=False
+        cmd, capture_output=True, timeout=timeout, check=False
     )
     if proc.returncode != 0:
         raise RuntimeError(
-            f"{cmd[0]} 退出码 {proc.returncode}: {proc.stderr.strip()[:500]}"
+            f"{cmd[0]} 退出码 {proc.returncode}: {_decode(proc.stderr).strip()[:500]}"
         )
-    return proc.stdout
+    return _decode(proc.stdout)
 
 
 def _truthy(value: object) -> bool:
