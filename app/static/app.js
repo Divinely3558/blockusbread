@@ -148,9 +148,8 @@ function renderSessions(info) {
     return;
   }
   bar.hidden = false;
-  const users = (info.users || []).join("、") || "—";
   $("#sessions-summary").textContent =
-    `${info.connections} 个 SFTP 连接 · 用户 ${users}`;
+    `${info.connections} 个 SFTP 连接`;
 
   const detail = $("#sessions-detail");
   const files = info.openFiles || [];
@@ -163,7 +162,6 @@ function renderSessions(info) {
         const name = f.path.split("/").pop() || "/";
         const verb = f.writable ? "写入" : "读取";
         return `<div class="session-row">
-          <span class="session-user">${esc(f.user)}</span>
           <span class="session-verb ${f.writable ? "is-write" : "is-read"}">${verb}</span>
           <span class="session-file" title="${esc(f.path)}">${esc(name)}</span>
           <span class="session-vol">${esc(f.volume)}</span>
