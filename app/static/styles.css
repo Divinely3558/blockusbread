@@ -455,14 +455,22 @@ code {
 .part-info { min-width: 0; }
 .part-name { font-weight: 550; font-size: 14px; }
 .part-meta { color: var(--text-secondary); font-size: 12px; margin-top: 3px; }
-.part-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.part-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
 
-/* 实时传输速率（↓ 下载 / ↑ 上传） */
+/* 实时传输速率（↓ 下载 / ↑ 上传）：恒定贴操作区右缘，与按钮数量无关 */
 .speed-meter {
   margin-left: auto;
   display: inline-flex;
   align-items: center;
   gap: 7px;
+  flex-shrink: 0;
 }
 .speed {
   display: inline-flex;
