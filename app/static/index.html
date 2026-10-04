@@ -46,6 +46,10 @@
         <span class="brand-text">BlockUSBRead</span>
       </div>
       <nav class="topnav">
+        <button class="btn ghost" id="btn-jobs" title="后台文件传输任务" hidden>
+          <i class="ic ic-move"></i><span class="jobs-label">传输</span>
+          <span id="jobs-badge" class="jobs-badge" hidden>0</span>
+        </button>
         <button class="btn ghost" id="btn-refresh" title="重新扫描设备"><i class="ic ic-refresh"></i>刷新设备</button>
         <button class="btn danger" id="btn-logout">退出</button>
       </nav>
@@ -55,6 +59,13 @@
   <main class="container">
     <div id="global-banner" class="banner" hidden></div>
     <div id="share-banner" class="banner info" hidden></div>
+    <div id="sessions-bar" class="sessions-bar" hidden>
+      <button class="sessions-head" id="sessions-toggle" type="button">
+        <i class="ic ic-activity sessions-pulse"></i>
+        <span id="sessions-summary" class="sessions-summary"></span>
+      </button>
+      <div id="sessions-detail" class="sessions-detail" hidden></div>
+    </div>
     <div class="page-head">
       <h2>外接存储</h2>
       <p>插入 USB 硬盘后自动识别；BitLocker 卷解锁后通过 SFTP 访问</p>
@@ -64,6 +75,127 @@
 </div>
 
 <div id="toast-container"></div>
+
+<!-- 文件浏览弹窗 -->
+<div id="fs-modal" class="modal-mask" hidden>
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <div class="modal-title">
+        <i class="ic ic-folder-open"></i>
+        <span id="fs-title">文件</span>
+      </div>
+      <button class="btn icon-btn" id="fs-close" title="关闭"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="fs-toolbar">
+      <div id="fs-crumbs" class="crumbs"></div>
+      <div class="fs-tools">
+        <button class="btn mini" id="fs-reload" title="刷新"><i class="ic ic-refresh"></i></button>
+        <button class="btn mini primary" id="fs-upload" hidden><i class="ic ic-upload"></i>上传文件</button>
+        <input type="file" id="fs-file-input" hidden>
+      </div>
+    </div>
+    <div id="fs-upload-progress" class="upload-progress" hidden>
+      <div class="upload-track"><div class="upload-fill" style="width:0%"></div></div>
+      <span class="upload-text">上传中… 0%</span>
+    </div>
+    <div id="fs-list" class="fs-list"></div>
+  </div>
+</div>
+
+<!-- 媒体播放弹窗 -->
+<div id="player-modal" class="modal-mask" hidden>
+  <div class="modal modal-media">
+    <div class="modal-head">
+      <div class="modal-title" id="player-title">—</div>
+      <button class="btn icon-btn" id="player-close" title="关闭"><i class="ic ic-close"></i></button>
+    </div>
+    <div id="player-body" class="player-body"></div>
+  </div>
+</div>
+
+<!-- 文本预览弹窗 -->
+<div id="text-modal" class="modal-mask" hidden>
+  <div class="modal modal-text">
+    <div class="modal-head">
+      <div class="modal-title">
+        <i class="ic ic-file"></i><span id="text-title">—</span>
+      </div>
+      <button class="btn icon-btn" id="text-close" title="关闭（Esc）"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="text-bar">
+      <span id="text-meta" class="text-meta">—</span>
+      <button class="btn mini" id="text-download"><i class="ic ic-download"></i>下载原文件</button>
+    </div>
+    <pre id="text-body" class="text-body"></pre>
+  </div>
+</div>
+
+<!-- 移动/复制目标选择弹窗 -->
+<div id="move-modal" class="modal-mask" hidden>
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <div class="modal-title"><i class="ic ic-move"></i><span id="move-title">移动到…</span></div>
+      <button class="btn icon-btn" id="move-close" title="关闭"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="modal-body move-body">
+      <div class="move-source">
+        <span class="move-kicker">移动项目</span>
+        <div class="move-source-name"><i class="ic ic-file"></i><span id="move-src-name">—</span></div>
+        <div id="move-hint" class="move-hint"></div>
+      </div>
+      <label class="field">
+        <span>目标硬盘（仅显示读写模式挂载的卷，只读盘无法接收粘贴）</span>
+        <select id="move-disk-select"></select>
+      </label>
+      <label class="move-keep" id="move-keep-row" hidden>
+        <input type="checkbox" id="move-keep">
+        <span>保留源文件（复制一份，不移动）</span>
+      </label>
+      <div class="field">
+        <span>目标文件夹</span>
+        <div id="move-crumbs" class="crumbs move-crumbs"></div>
+        <div id="move-dir-list" class="fs-list move-dir-list"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn" id="move-cancel-btn">取消</button>
+        <button class="btn primary" id="move-confirm"><i class="ic ic-move"></i><span id="move-confirm-label">开始移动</span></button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 后台传输任务弹窗 -->
+<div id="jobs-modal" class="modal-mask" hidden>
+  <div class="modal modal-lg">
+    <div class="modal-head">
+      <div class="modal-title"><i class="ic ic-move"></i>后台传输</div>
+      <button class="btn icon-btn" id="jobs-close" title="关闭"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="jobs-tip">任务在设备内部执行，关闭此窗口或网页都不会中断；弹出相关硬盘前需等待完成。</div>
+    <div id="jobs-list" class="jobs-list"></div>
+  </div>
+</div>
+
+<!-- 重命名弹窗 -->
+<div id="rename-modal" class="modal-mask" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title"><i class="ic ic-edit"></i>重命名</div>
+      <button class="btn icon-btn" id="rename-close"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="modal-body">
+      <label class="field">
+        <span>新名称</span>
+        <input id="rename-input" type="text" autocomplete="off">
+      </label>
+      <div id="rename-error" class="wrong" hidden></div>
+      <div class="modal-actions">
+        <button class="btn" id="rename-cancel">取消</button>
+        <button class="btn primary" id="rename-ok">确定</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="/static/app.js"></script>
 </body>

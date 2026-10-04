@@ -100,25 +100,87 @@ function enterApp(username) {
   refreshDisks();
   openEvents();
   openSpeeds();
+  loadJobs();
 }
 
 // ------------------------------------------------------------ 传输速率
 
 async function pollSpeeds() {
   try {
-    const data = await api("GET", "/api/speeds");
+    const [rates, usage, sessions] = await Promise.all([
+      api("GET", "/api/speeds"),
+      api("GET", "/api/usage"),
+      api("GET", "/api/sessions"),
+    ]);
     document.querySelectorAll(".speed-meter").forEach((el) => {
-      const s = data[el.dataset.speedKey] || {};
+      const s = rates[el.dataset.speedKey] || {};
       const rx = s.rx || 0;
       const tx = s.tx || 0;
       el.querySelector(".speed-rx .speed-val").textContent = humanRate(rx);
       el.querySelector(".speed-tx .speed-val").textContent = humanRate(tx);
       el.classList.toggle("idle", rx < 1 && tx < 1);
     });
+    document.querySelectorAll(".usage-bar").forEach((el) => {
+      const u = usage[el.dataset.usageKey];
+      if (!u || !u.total) return;
+      const pct = Math.min(100, Math.round((u.used / u.total) * 100));
+      el.querySelector(".usage-fill").style.width = `${pct}%`;
+      el.querySelector(".usage-pct").textContent = `${pct}%`;
+      el.querySelector(".usage-detail").textContent =
+        `已用 ${humanSize(u.used)} / ${humanSize(u.total)} · 可用 ${humanSize(u.avail)}`;
+      el.classList.toggle("near-full", pct >= 90);
+    });
+    renderSessions(sessions);
   } catch {
     /* 401 或瞬时错误：下个周期自然恢复/转登录页 */
   }
 }
+
+// ------------------------------------------------------------ SFTP 会话
+
+state.sessionsOpen = false;
+
+function renderSessions(info) {
+  const bar = $("#sessions-bar");
+  if (!info || !info.connections) {
+    bar.hidden = true;
+    state.sessionsOpen = false;
+    return;
+  }
+  bar.hidden = false;
+  const users = (info.users || []).join("、") || "—";
+  $("#sessions-summary").textContent =
+    `${info.connections} 个 SFTP 连接 · 用户 ${users}`;
+
+  const detail = $("#sessions-detail");
+  const files = info.openFiles || [];
+  if (state.sessionsOpen) {
+    detail.hidden = false;
+    if (!files.length) {
+      detail.innerHTML = `<div class="sessions-empty">已连接，暂无打开的文件</div>`;
+    } else {
+      detail.innerHTML = files.map((f) => {
+        const name = f.path.split("/").pop() || "/";
+        const verb = f.writable ? "写入" : "读取";
+        return `<div class="session-row">
+          <span class="session-user">${esc(f.user)}</span>
+          <span class="session-verb ${f.writable ? "is-write" : "is-read"}">${verb}</span>
+          <span class="session-file" title="${esc(f.path)}">${esc(name)}</span>
+          <span class="session-vol">${esc(f.volume)}</span>
+        </div>`;
+      }).join("");
+    }
+  } else {
+    detail.hidden = true;
+  }
+}
+
+document.addEventListener("click", (ev) => {
+  if (ev.target.closest("#sessions-toggle")) {
+    state.sessionsOpen = !state.sessionsOpen;
+    pollSpeeds();
+  }
+});
 
 function openSpeeds() {
   closeSpeeds();
@@ -214,18 +276,22 @@ function openEvents() {
   closeEvents();
   const es = new EventSource("/api/events");
   state.evtSource = es;
-  ["state", "unlocking", "mounting", "unmounting"].forEach((name) =>
-    es.addEventListener(name, refreshDisks)
-  );
-  es.addEventListener("ejected", async () => {
+  // 后端只发 state（载荷 reason 区分原因）与 jobs 两类事件
+  es.addEventListener("state", async (ev) => {
     await refreshDisks();
-    toast("已安全弹出，可以拔除硬盘", "ok");
+    let reason = "";
+    try {
+      reason = JSON.parse(ev.data || "{}")?.reason || "";
+    } catch { /* 忽略坏消息 */ }
+    // 物理拔出时后端已自动清理挂载，HTTP 调用方收不到响应，只能靠 SSE 提示
+    if (reason === "removed") toast("硬盘已拔出，挂载已自动清理");
   });
-  es.addEventListener("removed", async () => {
-    await refreshDisks();
-    toast("硬盘已拔出，挂载已自动清理");
+  es.addEventListener("jobs", (ev) => {
+    try {
+      jobsState.jobs = (JSON.parse(ev.data)?.jobs) || [];
+      renderJobs();
+    } catch { /* 忽略坏消息 */ }
   });
-  es.addEventListener("forgot", refreshDisks);
   es.onerror = () => {
     // 401 由下一次 me 检查发现；EventSource 会自动重连，无需手动处理
   };
@@ -275,6 +341,7 @@ function render() {
     return;
   }
   list.innerHTML = state.disks.map(renderDisk).join("");
+  loadMissingSmart();
 }
 
 function renderDisk(disk) {
@@ -303,10 +370,67 @@ function renderDisk(disk) {
             </button>` : ""}
         </div>
       </div>
+      ${renderSmart(disk)}
       ${disk.partitions.length
         ? disk.partitions.map(renderPartition).join("")
         : `<div class="part-row"><div class="part-meta">该磁盘没有可识别的分区</div></div>`}
     </div>`;
+}
+
+// ------------------------------------------------------------ SMART 健康
+
+state.smart = {};
+
+function smartChipsHtml(info) {
+  if (info.status === "unavailable") return "";
+  const health = info.healthy === null || info.healthy === undefined
+    ? ""
+    : `<span class="smart-chip ${info.healthy ? "ok" : "bad"}">
+         <i class="ic ${info.healthy ? "ic-check" : "ic-alert"}"></i>${info.healthy ? "健康" : "健康异常"}
+       </span>`;
+  const hot = (info.tempC ?? 0) >= 55;
+  const temp = info.tempC !== null && info.tempC !== undefined
+    ? `<span class="smart-chip ${hot ? "bad" : ""}"><i class="ic ic-thermometer"></i>${info.tempC}°C</span>`
+    : "";
+  const hours = info.powerOnHours !== null && info.powerOnHours !== undefined
+    ? `<span class="smart-chip"><i class="ic ic-clock"></i>${info.powerOnHours.toLocaleString()} 小时</span>`
+    : "";
+  return `<div class="smart-chips">${health}${temp}${hours}</div>`;
+}
+
+function renderSmart(disk) {
+  const info = state.smart[disk.id];
+  if (info && info.status === "unavailable") return "";
+  return `
+    <div class="smart-row" data-smart-id="${esc(disk.id)}">
+      ${info ? smartChipsHtml(info) : `<span class="smart-loading"><i class="ic ic-loader ic-spin"></i>读取 SMART…</span>`}
+    </div>`;
+}
+
+async function loadSmart(diskId, force = false) {
+  try {
+    const info = await api("GET", `/api/disks/${encodeURIComponent(diskId)}/smart${force ? "?force=1" : ""}`);
+    state.smart[diskId] = info;
+    const row = document.querySelector(`.smart-row[data-smart-id="${CSS.escape(diskId)}"]`);
+    if (!row) return;
+    if (info.status === "unavailable") {
+      row.remove();
+    } else {
+      row.innerHTML = smartChipsHtml(info);
+    }
+  } catch {
+    /* 查询失败：清除占位，下次重绘时自动重试 */
+    delete state.smart[diskId];
+  }
+}
+
+function loadMissingSmart() {
+  for (const disk of state.disks || []) {
+    if (!(disk.id in state.smart)) {
+      state.smart[disk.id] = null;   // 占位，避免重复请求
+      loadSmart(disk.id);
+    }
+  }
 }
 
 function renderPartition(p) {
@@ -324,6 +448,11 @@ function renderPartition(p) {
         <div class="part-info">
           <div class="part-name">${tags} ${title}</div>
         </div>
+        ${p.state === "mounted" ? `
+        <span class="usage-bar" data-usage-key="${esc(p.key)}" title="卷容量与剩余空间">
+          <span class="usage-track"><span class="usage-fill" style="width:0%"></span></span>
+          <span class="usage-meta"><span class="usage-pct">—</span><span class="usage-detail">—</span></span>
+        </span>` : ""}
         <div class="part-actions">${renderActions(p)}</div>
       </div>
       ${p.state === "error" && p.error
@@ -342,6 +471,9 @@ function renderActions(p) {
       <span class="tag ${p.mode === "rw" ? "rw" : "ro"}">
         ${p.mode === "rw" ? "读写模式" : "只读模式"}
       </span>
+      <button class="btn primary" onclick="openBrowser('${esc(p.key)}')">
+        <i class="ic ic-folder-open"></i>浏览文件
+      </button>
       <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="卷 SFTP 路径">
         <i class="ic ic-copy"></i>复制 SFTP 路径
       </button>
@@ -350,9 +482,9 @@ function renderActions(p) {
         ? `<button class="btn" onclick="forgetCredential('${esc(p.key)}')">忘记凭据</button>`
         : ""}
       <span class="speed-meter idle" data-speed-key="${esc(p.key)}"
-            title="实时传输速度：↓ 下载（U盘 → 客户端）/ ↑ 上传（客户端 → U盘）">
-        <span class="speed speed-rx"><span class="speed-arrow">↓</span><span class="speed-val">0 B/s</span></span>
-        <span class="speed speed-tx"><span class="speed-arrow">↑</span><span class="speed-val">0 B/s</span></span>
+            title="实时传输速度：下载（U 盘至客户端）/ 上传（客户端至 U 盘）">
+        <span class="speed speed-rx"><i class="ic ic-arrow-down"></i><span class="speed-val">0 B/s</span></span>
+        <span class="speed speed-tx"><i class="ic ic-arrow-up"></i><span class="speed-val">0 B/s</span></span>
       </span>
       <div class="sftp-line"><i class="ic ic-folder"></i><code>${esc(sftp)}</code></div>`;
   }
@@ -500,5 +632,633 @@ async function forgetCredential(key) {
     toast(err.message, "err");
   }
 }
+
+// ------------------------------------------------------------ 网页文件浏览
+
+const fsState = {
+  key: null,
+  label: "",
+  path: "",
+  writable: false,
+  entries: [],
+  crumbs: [],
+};
+
+const VIDEO_EXT = ["mp4", "m4v", "mkv", "webm", "mov", "avi", "ts", "mpg", "mpeg", "3gp", "flv", "wmv"];
+const AUDIO_EXT = ["mp3", "flac", "aac", "m4a", "ogg", "oga", "wav", "opus", "wma"];
+const IMAGE_EXT = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg", "heic", "heif"];
+// 可在线预览的纯文本/代码/配置类型（与后端白名单保持一致）
+const TEXT_EXT = ["txt", "log", "ini", "inf", "conf", "cfg", "config", "properties", "prop",
+  "env", "md", "markdown", "json", "xml", "csv", "tsv", "yml", "yaml", "toml",
+  "sh", "bash", "zsh", "bat", "cmd", "ps1", "py", "js", "mjs", "ts", "css",
+  "scss", "less", "html", "htm", "svg", "c", "h", "cpp", "cc", "hpp", "java",
+  "go", "rs", "rb", "php", "pl", "lua", "sql"];
+
+function extOf(name) {
+  const i = name.lastIndexOf(".");
+  return i >= 0 ? name.slice(i + 1).toLowerCase() : "";
+}
+function fileKind(name) {
+  const ext = extOf(name);
+  if (VIDEO_EXT.includes(ext)) return "video";
+  if (AUDIO_EXT.includes(ext)) return "audio";
+  if (IMAGE_EXT.includes(ext)) return "image";
+  if (TEXT_EXT.includes(ext)) return "text";
+  return "other";
+}
+function humanDate(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function encPath(p) { return encodeURIComponent(p || ""); }
+function rawUrl(key, path, download) {
+  return `/api/volumes/${encodeURIComponent(key)}/raw?path=${encPath(path)}${download ? "&download=1" : ""}`;
+}
+function findPartition(key) {
+  for (const d of state.disks) {
+    const p = d.partitions.find((x) => x.key === key);
+    if (p) return { disk: d, part: p };
+  }
+  return null;
+}
+
+async function openBrowser(key) {
+  const found = findPartition(key);
+  if (!found) { toast("卷不可用", "err"); return; }
+  fsState.key = key;
+  fsState.label = found.part.label || `${found.disk.displayName} · 分区 ${found.part.number}`;
+  $("#fs-title").textContent = fsState.label;
+  $("#fs-modal").hidden = false;
+  await loadFsDir("");
+}
+
+function closeBrowser() {
+  $("#fs-modal").hidden = true;
+  fsState.key = null;
+  fsState.entries = [];
+}
+
+async function loadFsDir(path) {
+  const list = $("#fs-list");
+  list.innerHTML = `<div class="fs-loading"><i class="ic ic-loader ic-spin"></i> 读取中…</div>`;
+  try {
+    const data = await api("GET", `/api/volumes/${encodeURIComponent(fsState.key)}/browse?path=${encPath(path)}`);
+    fsState.path = data.path || "";
+    fsState.writable = !!data.writable;
+    fsState.entries = data.entries || [];
+    fsState.crumbs = data.crumbs || [];
+    renderFs();
+  } catch (err) {
+    toast(err.message, "err");
+    closeBrowser();
+  }
+}
+
+function renderFs() {
+  $("#fs-upload").hidden = !fsState.writable;
+  $("#fs-crumbs").innerHTML = fsState.crumbs.map((c, i) => {
+    const last = i === fsState.crumbs.length - 1;
+    return last
+      ? `<span class="crumb cur">${esc(c.name)}</span>`
+      : `<button class="crumb" data-path="${esc(c.path)}">${esc(c.name)}</button><span class="crumb-sep">/</span>`;
+  }).join("");
+
+  const list = $("#fs-list");
+  if (!fsState.entries.length) {
+    list.innerHTML = `<div class="fs-empty">空文件夹</div>`;
+    return;
+  }
+  list.innerHTML = fsState.entries.map((e) => {
+    const full = fsState.path ? `${fsState.path}/${e.name}` : e.name;
+    const icon = e.isDir ? "folder" : ({ video: "film", audio: "music", image: "image", text: "file" }[fileKind(e.name)] || "file");
+    const nameCell = `
+      <span class="fs-ic fs-ic-${icon}"><i class="ic ic-${icon === "folder" ? "folder" : icon}"></i></span>
+      <span class="fs-name" title="${esc(e.name)}">${esc(e.name)}</span>`;
+    let actions;
+    if (e.isDir) {
+      actions = (writableVolumes().length ? transferAction(full, e.name) : "")
+        + (fsState.writable ? fsWriteActions(full, e.name, true) : "");
+    } else {
+      actions = `<button class="btn mini" title="下载" data-act="download" data-path="${esc(full)}"><i class="ic ic-download"></i></button>`
+        + (writableVolumes().length ? transferAction(full, e.name) : "")
+        + (fsState.writable ? fsWriteActions(full, e.name, false) : "");
+    }
+    const meta = e.isDir ? "文件夹" : `${humanSize(e.size)} · ${humanDate(e.mtime)}`;
+    return `
+      <div class="fs-row" data-path="${esc(full)}" data-dir="${e.isDir ? 1 : 0}">
+        <div class="fs-main">${nameCell}</div>
+        <div class="fs-meta desktop-only">${esc(meta)}</div>
+        <div class="fs-actions">${actions}</div>
+      </div>`;
+  }).join("");
+}
+
+// 传输按钮：只读盘只能复制出去；读写盘默认移动（弹窗内可勾选改为复制）
+function transferAction(full, name) {
+  if (fsState.writable) {
+    return `
+    <button class="btn mini" title="移动到其他位置（弹窗内可改为复制）" data-act="move" data-op="move" data-path="${esc(full)}" data-name="${esc(name)}">
+      <i class="ic ic-move"></i>
+    </button>`;
+  }
+  return `
+    <button class="btn mini" title="复制到其他硬盘（只读盘不能移动）" data-act="move" data-op="copy" data-path="${esc(full)}" data-name="${esc(name)}">
+      <i class="ic ic-copy"></i>
+    </button>`;
+}
+
+// 当前以读写模式挂载的卷（可作为移动目标）
+function writableVolumes() {
+  const out = [];
+  for (const d of state.disks || []) {
+    for (const p of d.partitions || []) {
+      if (p.state === "mounted" && p.mode === "rw") {
+        out.push({ disk: d, part: p });
+      }
+    }
+  }
+  return out;
+}
+
+function fsWriteActions(full, name, isDir) {
+  return `
+    <button class="btn mini" title="重命名" data-act="rename" data-path="${esc(full)}" data-name="${esc(name)}">
+      <i class="ic ic-edit"></i>
+    </button>
+    <button class="btn mini danger" title="删除" data-act="delete" data-path="${esc(full)}" data-dir="${isDir ? 1 : 0}">
+      <i class="ic ic-trash"></i>
+    </button>`;
+}
+
+$("#fs-crumbs").addEventListener("click", (e) => {
+  const btn = e.target.closest(".crumb");
+  if (btn) loadFsDir(btn.dataset.path || "");
+});
+
+$("#fs-list").addEventListener("click", (e) => {
+  const actBtn = e.target.closest("[data-act]");
+  const row = e.target.closest(".fs-row");
+  if (actBtn) {
+    e.stopPropagation();
+    const { act, path } = actBtn.dataset;
+    if (act === "download") downloadFile(path);
+    else if (act === "move") openMove(path, actBtn.dataset.name, actBtn.dataset.op || "move");
+    else if (act === "rename") openRename(path, actBtn.dataset.name);
+    else if (act === "delete") deleteEntry(path, actBtn.dataset.dir === "1");
+    return;
+  }
+  if (row && row.dataset.dir === "1") loadFsDir(row.dataset.path);
+  else if (row) openEntry(row.dataset.path);
+});
+
+function openEntry(path) {
+  const name = path.split("/").pop() || path;
+  const kind = fileKind(name);
+  if (kind === "other") { downloadFile(path); return; }
+  if (kind === "text") { openTextPreview(path, name); return; }
+  const url = rawUrl(fsState.key, path, false);
+  $("#player-title").textContent = name;
+  const body = $("#player-body");
+  if (kind === "video") {
+    body.innerHTML = `<video src="${esc(url)}" controls autoplay preload="metadata" playsinline></video>`;
+  } else if (kind === "audio") {
+    body.innerHTML = `<div class="audio-wrap"><i class="ic ic-music audio-art"></i>
+      <audio src="${esc(url)}" controls autoplay preload="metadata"></audio></div>`;
+  } else {
+    body.innerHTML = `<img src="${esc(url)}" alt="${esc(name)}">`;
+  }
+  $("#player-modal").hidden = false;
+}
+
+async function openTextPreview(path, name) {
+  const modal = $("#text-modal");
+  $("#text-title").textContent = name;
+  $("#text-meta").textContent = "读取中…";
+  // textContent 赋值：盘内 HTML/脚本只作纯文本显示，不会执行
+  const pre = $("#text-body");
+  pre.textContent = "";
+  pre.classList.add("is-loading");
+  $("#text-download").onclick = () => downloadFile(path);
+  modal.hidden = false;
+  try {
+    const data = await api(
+      "GET",
+      `/api/volumes/${encodeURIComponent(fsState.key)}/preview?path=${encPath(path)}`
+    );
+    $("#text-meta").textContent = `${humanSize(data.size)} · ${data.encoding || "文本"}`;
+    pre.textContent = data.content || "（空文件）";
+  } catch (err) {
+    pre.classList.remove("is-loading");
+    modal.hidden = true;
+    toast(err.message, "err");
+  } finally {
+    pre.classList.remove("is-loading");
+  }
+}
+
+function closeTextPreview() {
+  $("#text-modal").hidden = true;
+  $("#text-body").textContent = "";
+}
+
+function downloadFile(path) {
+  const a = document.createElement("a");
+  a.href = rawUrl(fsState.key, path, true);
+  a.rel = "noopener";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function closePlayer() {
+  $("#player-modal").hidden = true;
+  $("#player-body").innerHTML = "";
+}
+
+$("#fs-close").addEventListener("click", closeBrowser);
+$("#fs-reload").addEventListener("click", () => loadFsDir(fsState.path));
+$("#player-close").addEventListener("click", closePlayer);
+$("#text-close").addEventListener("click", closeTextPreview);
+
+// 遮罩点击 / Esc 关闭弹窗
+[["#fs-modal", closeBrowser], ["#player-modal", closePlayer], ["#text-modal", closeTextPreview]]
+  .forEach(([sel, fn]) => $(sel).addEventListener("click", (e) => {
+    if (e.target === $(sel)) fn();
+  }));
+
+// ------------------------------------------------------------ 移动 / 后台传输
+
+const moveState = {
+  srcKey: null,
+  srcPath: "",
+  srcName: "",
+  destKey: "",
+  destPath: "",
+  srcWritable: false,   // 源卷是否可写（可写=可移动，只读=只能复制）
+  op: "move",           // move | copy
+  entries: [],
+  crumbs: [],
+  busy: false,
+};
+const jobsState = { jobs: [] };
+
+function volumeLabel(part, disk) {
+  return part.label || `${disk.displayName || disk.id} · 分区 ${part.number}`;
+}
+
+async function openMove(path, name, wantOp = "move") {
+  const targets = writableVolumes();
+  if (!targets.length) {
+    toast("没有以读写模式挂载的硬盘作为目标，请先用读写模式解锁目标硬盘", "err");
+    return;
+  }
+  const src = findPartition(fsState.key);
+  moveState.srcKey = fsState.key;
+  moveState.srcPath = path;
+  moveState.srcName = name;
+  moveState.srcWritable = src && src.part.mode === "rw";
+  // 只读源强制复制；读写源默认移动，用户可在弹窗勾选改为复制
+  moveState.op = moveState.srcWritable ? wantOp : "copy";
+
+  $("#move-src-name").textContent = name;
+  const hint = $("#move-hint");
+  const keepRow = $("#move-keep-row");
+  if (!moveState.srcWritable) {
+    // 只读硬盘：只能复制
+    hint.textContent = "源硬盘为只读挂载，只能复制（源文件会保留）。";
+    hint.hidden = false;
+    keepRow.hidden = true;
+  } else {
+    hint.hidden = true;
+    keepRow.hidden = false;
+  }
+  $("#move-keep").checked = moveState.op === "copy";
+  updateMoveModeUI();
+
+  const sel = $("#move-disk-select");
+  sel.innerHTML = targets.map(({ disk, part }) =>
+    `<option value="${esc(part.key)}">${esc(volumeLabel(part, disk))}</option>`).join("");
+  // 默认选另一个盘（跨盘移动是主要场景）
+  const other = targets.find((t) => t.part.key !== fsState.key) || targets[0];
+  sel.value = other.part.key;
+  moveState.destKey = other.part.key;
+
+  $("#move-confirm").disabled = false;
+  $("#move-modal").hidden = false;
+  await loadMoveDir("");
+}
+
+function updateMoveModeUI() {
+  const isCopy = moveState.op === "copy";
+  $("#move-title").textContent = isCopy ? "复制到…" : "移动到…";
+  $("#move-confirm-label").textContent = isCopy ? "开始复制" : "开始移动";
+  $("#move-confirm").querySelector(".ic").className = `ic ${isCopy ? "ic-copy" : "ic-move"}`;
+}
+
+$("#move-keep").addEventListener("change", (e) => {
+  moveState.op = e.target.checked ? "copy" : "move";
+  updateMoveModeUI();
+});
+
+function closeMove() {
+  $("#move-modal").hidden = true;
+  moveState.busy = false;
+}
+
+async function loadMoveDir(path) {
+  const list = $("#move-dir-list");
+  list.innerHTML = `<div class="fs-loading"><i class="ic ic-loader ic-spin"></i> 读取中…</div>`;
+  try {
+    const data = await api("GET", `/api/volumes/${encodeURIComponent(moveState.destKey)}/browse?path=${encPath(path)}`);
+    moveState.destPath = data.path || "";
+    moveState.crumbs = data.crumbs || [];
+    moveState.entries = (data.entries || []).filter((e) => e.isDir);
+    renderMoveDirs();
+  } catch (err) {
+    toast(err.message, "err");
+  }
+}
+
+function renderMoveDirs() {
+  $("#move-crumbs").innerHTML = moveState.crumbs.map((c, i) => {
+    const last = i === moveState.crumbs.length - 1;
+    return last
+      ? `<span class="crumb cur">${esc(c.name)}</span>`
+      : `<button class="crumb" data-path="${esc(c.path)}">${esc(c.name)}</button><span class="crumb-sep">/</span>`;
+  }).join("");
+  const list = $("#move-dir-list");
+  if (!moveState.entries.length) {
+    list.innerHTML = `<div class="fs-empty">该文件夹下没有子文件夹，将放到当前位置</div>`;
+    return;
+  }
+  list.innerHTML = moveState.entries.map((e) => `
+    <div class="fs-row move-dir-row" data-path="${esc(moveState.destPath ? `${moveState.destPath}/${e.name}` : e.name)}">
+      <div class="fs-main">
+        <span class="fs-ic fs-ic-folder"><i class="ic ic-folder"></i></span>
+        <span class="fs-name">${esc(e.name)}</span>
+      </div>
+    </div>`).join("");
+}
+
+$("#move-disk-select").addEventListener("change", async (e) => {
+  moveState.destKey = e.target.value;
+  await loadMoveDir("");
+});
+$("#move-crumbs").addEventListener("click", (e) => {
+  const btn = e.target.closest(".crumb");
+  if (btn) loadMoveDir(btn.dataset.path || "");
+});
+$("#move-dir-list").addEventListener("click", (e) => {
+  const row = e.target.closest(".move-dir-row");
+  if (row) loadMoveDir(row.dataset.path);
+});
+$("#move-close").addEventListener("click", closeMove);
+$("#move-cancel-btn").addEventListener("click", closeMove);
+$("#move-modal").addEventListener("click", (e) => {
+  if (e.target === $("#move-modal")) closeMove();
+});
+
+$("#move-confirm").addEventListener("click", async () => {
+  if (moveState.busy) return;
+  moveState.busy = true;
+  const btn = $("#move-confirm");
+  btn.disabled = true;
+  try {
+    const res = await api("POST", `/api/volumes/${encodeURIComponent(moveState.srcKey)}/move`, {
+      path: moveState.srcPath,
+      destKey: moveState.destKey,
+      destPath: moveState.destPath,
+      mode: moveState.op,
+    });
+    closeMove();
+    toast(res.op === "copy"
+      ? `已开始后台复制「${moveState.srcName}」，源文件保留`
+      : `已开始后台移动「${moveState.srcName}」`, "ok");
+    loadFsDir(fsState.path);
+    openJobs(false);
+    await loadJobs();
+  } catch (err) {
+    toast(err.message, "err");
+    moveState.busy = false;
+    btn.disabled = false;
+  }
+});
+
+// ---------------- 任务中心
+
+async function loadJobs() {
+  try {
+    const data = await api("GET", "/api/jobs");
+    jobsState.jobs = data.jobs || [];
+    renderJobs();
+  } catch { /* 未登录等场景忽略 */ }
+}
+
+function renderJobs() {
+  const active = jobsState.jobs.filter((j) => j.status === "queued" || j.status === "running");
+  const badge = $("#jobs-badge");
+  const btnJobs = $("#btn-jobs");
+  if (active.length) {
+    btnJobs.hidden = false;
+    badge.hidden = false;
+    badge.textContent = active.length;
+  } else {
+    badge.hidden = true;
+    btnJobs.hidden = jobsState.jobs.length === 0;
+  }
+
+  const list = $("#jobs-list");
+  if (!jobsState.jobs.length) {
+    list.innerHTML = `<div class="fs-empty">暂无传输任务</div>`;
+    return;
+  }
+  list.innerHTML = jobsState.jobs.map((j) => {
+    const pct = j.bytesTotal ? Math.min(100, Math.round((j.bytesDone / j.bytesTotal) * 100)) : 0;
+    const statusMap = {
+      queued: ["排队中", "tag busy"],
+      running: ["传输中", "tag busy"],
+      done: ["已完成", "tag done"],
+      error: ["失败", "tag err"],
+      canceled: ["已取消", "tag"],
+    };
+    const [statusText, tagCls] = statusMap[j.status] || [j.status, "tag"];
+    const opLabel = j.op === "copy" ? "复制" : "移动";
+    const canCancel = j.status === "queued" || j.status === "running";
+    const progress = j.status === "running" && j.bytesTotal
+      ? `${pct}% · ${humanSize(j.bytesDone)} / ${humanSize(j.bytesTotal)} · ${j.filesDone}/${j.filesTotal} 文件`
+      : (j.status === "queued" ? "等待开始…" : "");
+    return `
+      <div class="job-item job-${j.status}">
+        <div class="job-head">
+          <div class="job-name" title="${esc(j.name)}"><i class="ic ${j.op === "copy" ? "ic-copy" : "ic-move"}"></i>${esc(j.name)}</div>
+          <span class="${tagCls}">${opLabel} · ${statusText}</span>
+        </div>
+        <div class="job-route">${esc(shortKey(j.srcKey))}<i class="ic ic-arrow-right"></i>${esc(shortKey(j.dstKey))}${j.dstPath ? " / " + esc(j.dstPath) : ""}</div>
+        ${j.status === "running" || j.status === "queued" ? `
+          <div class="job-track"><div class="job-fill" style="width:${pct}%"></div></div>
+          <div class="job-foot">
+            <span class="job-progress">${esc(progress || " ")}${j.current ? ` · ${esc(j.current)}` : ""}</span>
+            ${canCancel ? `<button class="btn mini danger" data-job-cancel="${esc(j.id)}">取消</button>` : ""}
+          </div>` : ""}
+        ${j.error ? `<div class="job-error"><i class="ic ic-alert"></i>${esc(j.error)}</div>` : ""}
+      </div>`;
+  }).join("");
+}
+
+function shortKey(key) {
+  // FC30383E5705D-p1 -> FC30…D-p1，避免路由行过长
+  return key.length > 14 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
+}
+
+function openJobs(load = true) {
+  $("#jobs-modal").hidden = false;
+  if (load) loadJobs();
+}
+function closeJobs() { $("#jobs-modal").hidden = true; }
+
+$("#btn-jobs").addEventListener("click", () => openJobs(true));
+$("#jobs-close").addEventListener("click", closeJobs);
+$("#jobs-modal").addEventListener("click", (e) => {
+  if (e.target === $("#jobs-modal")) closeJobs();
+});
+$("#jobs-list").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-job-cancel]");
+  if (!btn) return;
+  btn.disabled = true;
+  try {
+    await api("POST", `/api/jobs/${encodeURIComponent(btn.dataset.jobCancel)}/cancel`);
+    await loadJobs();
+  } catch (err) {
+    toast(err.message, "err");
+  }
+});
+
+// ------------------------------------------------------------ 上传
+
+$("#fs-upload").addEventListener("click", () => $("#fs-file-input").click());
+
+$("#fs-file-input").addEventListener("change", async function onPick() {
+  const file = this.files && this.files[0];
+  this.value = "";
+  if (!file) return;
+  await uploadFile(file, 0);
+});
+
+async function uploadFile(file, overwrite) {
+  const bar = $("#fs-upload-progress");
+  const fill = bar.querySelector(".upload-fill");
+  const text = bar.querySelector(".upload-text");
+  bar.hidden = false;
+  fill.style.width = "0%";
+  text.textContent = `上传 ${file.name}：0%`;
+
+  const form = new FormData();
+  form.append("path", fsState.path);
+  form.append("overwrite", String(overwrite));
+  form.append("file", file);
+
+  await new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", `/api/volumes/${encodeURIComponent(fsState.key)}/upload`);
+    xhr.upload.onprogress = (ev) => {
+      if (!ev.lengthComputable) return;
+      const pct = Math.round((ev.loaded / ev.total) * 100);
+      fill.style.width = `${pct}%`;
+      text.textContent = `上传 ${file.name}：${pct}%`;
+    };
+    xhr.onload = () => {
+      bar.hidden = true;
+      let detail = "";
+      try { detail = JSON.parse(xhr.responseText).detail || ""; } catch { /* ignore */ }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        toast(`已上传 ${file.name}`, "ok");
+        loadFsDir(fsState.path);
+      } else if (xhr.status === 409 && detail.includes("同名") && window.confirm(`「${file.name}」已存在，覆盖它？`)) {
+        uploadFile(file, 1).then(resolve);
+        return;
+      } else {
+        toast(detail || `上传失败（HTTP ${xhr.status}）`, "err");
+      }
+      resolve();
+    };
+    xhr.onerror = () => {
+      bar.hidden = true;
+      toast("上传失败：网络错误", "err");
+      resolve();
+    };
+    xhr.send(form);
+  });
+}
+
+// ------------------------------------------------------------ 删除 / 重命名
+
+async function deleteEntry(path, isDir) {
+  const name = path.split("/").pop() || path;
+  const tip = isDir
+    ? `确认删除文件夹「${name}」及其全部内容？此操作不可恢复。`
+    : `确认删除文件「${name}」？此操作不可恢复。`;
+  if (!window.confirm(tip)) return;
+  try {
+    await api("DELETE", `/api/volumes/${encodeURIComponent(fsState.key)}/entry`
+      + `?path=${encPath(path)}${isDir ? "&recursive=1" : ""}`);
+    toast("已删除", "ok");
+    loadFsDir(fsState.path);
+  } catch (err) {
+    toast(err.message, "err");
+  }
+}
+
+const renameState = { path: "", name: "" };
+
+function openRename(path, name) {
+  renameState.path = path;
+  renameState.name = name;
+  $("#rename-error").hidden = true;
+  $("#rename-input").value = name;
+  $("#rename-modal").hidden = false;
+  $("#rename-input").focus();
+  $("#rename-input").select();
+}
+
+function closeRename() {
+  $("#rename-modal").hidden = true;
+}
+
+async function submitRename() {
+  const newName = $("#rename-input").value.trim();
+  if (!newName) { $("#rename-error").textContent = "名称不能为空"; $("#rename-error").hidden = false; return; }
+  if (newName === renameState.name) { closeRename(); return; }
+  try {
+    await api("POST", `/api/volumes/${encodeURIComponent(fsState.key)}/rename`, {
+      path: renameState.path,
+      newName,
+    });
+    toast("已重命名", "ok");
+    closeRename();
+    loadFsDir(fsState.path);
+  } catch (err) {
+    $("#rename-error").textContent = err.message;
+    $("#rename-error").hidden = false;
+  }
+}
+
+$("#rename-close").addEventListener("click", closeRename);
+$("#rename-cancel").addEventListener("click", closeRename);
+$("#rename-ok").addEventListener("click", submitRename);
+$("#rename-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") submitRename();
+  if (e.key === "Escape") closeRename();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (!$("#jobs-modal").hidden) closeJobs();
+  else if (!$("#move-modal").hidden) closeMove();
+  else if (!$("#text-modal").hidden) closeTextPreview();
+  else if (!$("#player-modal").hidden) closePlayer();
+  else if (!$("#fs-modal").hidden) closeBrowser();
+});
 
 boot();

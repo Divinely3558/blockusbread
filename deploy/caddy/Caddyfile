@@ -1,0 +1,21 @@
+# BlockUSBRead 可选 HTTPS 反向代理
+#
+# 自签证书（tls internal）：浏览器首次打开会提示证书不受信任，
+# 手动信任一次即可；适合局域网内自用，不依赖任何外部 CA。
+#
+# 启用（默认不启动）：
+#   docker compose --profile tls up -d
+# 然后访问 https://<宿主机IP>:8443
+#
+# 客户端按 IP 访问时 SNI 为 IP，没有对应站点；default_sni 让无 SNI 的
+# 握手回落，on_demand 让内部 CA 在首次握手时为该 SNI（含 IP）现场签发证书
+{
+	default_sni localhost
+}
+
+https://:8443 {
+	tls internal {
+		on_demand
+	}
+	reverse_proxy blockusbread:8000
+}

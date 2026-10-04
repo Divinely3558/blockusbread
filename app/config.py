@@ -13,6 +13,8 @@ MOUNT_ROOT = Path(os.getenv("MOUNT_ROOT", "/mnt/usb"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 LOG_DIR = DATA_DIR / "logs"
 SECRETS_DATABASE = DATA_DIR / "secrets.db"
+# SSH 主机密钥持久化目录：容器重建后指纹不变，避免客户端反复收到密钥变更警告
+SSH_KEY_DIR = DATA_DIR / "ssh"
 
 # SFTP 服务配置（容器内 sshd 固定监听 22；SFTP_HOST_PORT 为宿主机映射端口，
 # 仅用于管理页向客户端展示连接地址）
@@ -21,9 +23,6 @@ SECRETS_DATABASE = DATA_DIR / "secrets.db"
 SFTP_SSHD_CONFIG = Path("/etc/ssh/sshd_config")
 SFTP_PORT = int(os.getenv("SFTP_PORT", "22"))
 SFTP_HOST_PORT = int(os.getenv("SFTP_HOST_PORT", "2222"))
-
-# BitLocker 普通分区允许的文件系统
-SUPPORTED_FSTYPES = {"ntfs", "exfat", "vfat", "fat", "ext2", "ext3", "ext4"}
 
 
 class ConfigError(RuntimeError):

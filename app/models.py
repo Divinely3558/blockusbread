@@ -16,12 +16,15 @@ class VolumeState(str, enum.Enum):
     MOUNTED = "mounted"            # 已挂载（ro/rw 由 mode 表示）
     UNMOUNTING = "unmounting"      # 卸载中
     ERROR = "error"                # 上次操作失败
-    REMOVED = "removed"            # 设备已拔出（终态，清理后删除）
 
 
 class MountMode(str, enum.Enum):
     RO = "ro"
     RW = "rw"
+
+
+# 普通（非 BitLocker）分区允许挂载的文件系统
+SUPPORTED_FSTYPES = {"ntfs", "exfat", "vfat", "fat", "ext2", "ext3", "ext4"}
 
 
 class CredentialKind(str, enum.Enum):
@@ -51,9 +54,7 @@ class PartitionInfo:
     def supported(self) -> bool:
         if self.bitlocker:
             return True
-        return self.fstype.lower() in {
-            "ntfs", "exfat", "vfat", "fat", "ext2", "ext3", "ext4"
-        }
+        return self.fstype.lower() in SUPPORTED_FSTYPES
 
     @property
     def mount_dir(self) -> Path:

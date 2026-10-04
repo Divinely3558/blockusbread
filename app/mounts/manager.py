@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -22,15 +23,18 @@ from app.models import (
     VolumeState,
 )
 from app.mounts.commands import (
-    DislockerUnsupported,
+    BitlockerCredentialError,
+    DeviceInUseError,
     MountError,
     dm_name_for,
+    kill_fuse_daemons,
     mount_filesystem,
     probe_fstype,
     run_cryptsetup_close,
     run_cryptsetup_open,
     run_dislocker,
     umount_filesystem,
+    warm_up_device,
 )
 
 log = logging.getLogger("mount.manager")
@@ -71,6 +75,14 @@ class MountManager:
                     return part
         raise VolumeNotFound(key)
 
+    def mounted_partition(self, key: str) -> tuple[PartitionInfo, VolumeRuntime]:
+        """取已挂载的分区与运行时；未挂载/不存在抛 VolumeNotFound。"""
+        part = self._partition(key)
+        runtime = self._volumes.get(key)
+        if runtime is None or runtime.state != VolumeState.MOUNTED:
+            raise VolumeNotFound(key)
+        return part, runtime
+
     def mounted_volumes(self):
         """枚举当前处于已挂载状态的 (PartitionInfo, VolumeRuntime)。"""
         for disk in self._disks:
@@ -78,6 +90,34 @@ class MountManager:
                 runtime = self._volumes.get(part.key)
                 if runtime is not None and runtime.state == VolumeState.MOUNTED:
                     yield part, runtime
+
+    async def usage(self) -> dict[str, dict[str, int]]:
+        """各已挂载卷的容量（字节）：{key: {total, used, avail}}。
+
+        走独立轮询接口而非 snapshot：可用空间随 SFTP 读写持续变化，
+        进 snapshot 会让 SSE 去重签名不断变化，造成前端无谓重绘。
+        """
+        return await asyncio.to_thread(self._usage_blocking)
+
+    def _usage_blocking(self) -> dict[str, dict[str, int]]:
+        result: dict[str, dict[str, int]] = {}
+        for part, runtime in self.mounted_volumes():
+            if not runtime.fs_dir:
+                continue
+            try:
+                st = os.statvfs(runtime.fs_dir)
+            except OSError:
+                continue
+            frsize = st.f_frsize
+            total = st.f_blocks * frsize
+            free_all = st.f_bfree * frsize
+            avail = st.f_bavail * frsize
+            result[part.key] = {
+                "total": total,
+                "used": max(0, total - free_all),
+                "avail": avail,
+            }
+        return result
 
     def _lock_for(self, key: str) -> asyncio.Lock:
         return self._volume_locks.setdefault(key, asyncio.Lock())
@@ -131,8 +171,10 @@ class MountManager:
                         kind, secret, mode = saved
                         log.info("卷 %s 存在已保存凭据，尝试自动解锁", part.path)
                         try:
-                            await self._unlock_locked(part, kind, secret, mode == MountMode.RW.value,
-                                                      actor="system")
+                            await self._unlock_locked(
+                                part, kind, secret, mode == MountMode.RW.value,
+                                actor="system",
+                            )
                         except MountError as exc:
                             rt.state = VolumeState.ERROR
                             rt.error = str(exc)
@@ -201,16 +243,64 @@ class MountManager:
         actor: str,
     ) -> None:
         rt = self._volumes[part.key]
-        readonly = not writable
         rt.error = None
 
-        rt.state = VolumeState.UNLOCKING
-        await self._notify("unlocking")
+        # 部分 USB 硬盘盒在盘体休眠后，唤醒后的首个 I/O 会长时间无响应
+        # （dislocker/mount 命令超时），盘体唤醒后重试即秒成功：
+        # 非凭据类失败时清理半成品、整体重试一次；凭据错误立即返回。
+        last_exc: MountError | None = None
+        for attempt in (1, 2):
+            rt.state = VolumeState.UNLOCKING
+            await self._notify("unlocking")
+            try:
+                # 先直读唤醒可能休眠的 USB 盘体，避免 FUSE 挂载卡死
+                await warm_up_device(part.path)
+                await self._open_and_mount_locked(part, rt, kind, secret, writable)
+                return
+            except BitlockerCredentialError:
+                raise
+            except DeviceInUseError:
+                raise
+            except MountError as exc:
+                last_exc = exc
+                log.warning("卷 %s 第 %d 次解锁尝试失败：%s", part.path, attempt, exc)
+                await self._partial_cleanup(part.mount_dir, rt)
+                rt.engine = None
+                if attempt == 1:
+                    await asyncio.sleep(2)
+        assert last_exc is not None
+        raise last_exc
 
-        # 优先 dislocker（FUSE，兼容旧格式）；
-        # 遇到 VIRTUALIZATION_INFO 等新格式元数据时 fallback 到 cryptsetup（内核 dm-crypt）。
-        # 注意顺序不能反：凭据错误时 dislocker 能明确报错，避免多跑一轮无效尝试。
+    async def _open_and_mount_locked(
+        self,
+        part: PartitionInfo,
+        rt: VolumeRuntime,
+        kind: str,
+        secret: str,
+        writable: bool,
+    ) -> None:
+        readonly = not writable
+
+        # 优先 cryptsetup（内核 bitlk，秒级完成，不受部分 USB 硬盘盒下
+        # dislocker/FUSE 挂死问题影响）；
+        # 仅当内核不支持或无法打开时才回退 dislocker（FUSE，兼容 Win7 等旧格式）。
+        # 凭据已被明确拒绝时直接上抛，不再尝试第二个引擎。
+        rt.dm_name = dm_name_for(part.key)
         try:
+            target = await run_cryptsetup_open(
+                device=part.path,
+                secret=secret,
+                readonly=readonly,
+                dm_name=rt.dm_name,
+            )
+            rt.engine = "cryptsetup"
+        except BitlockerCredentialError:
+            raise
+        except DeviceInUseError:
+            raise
+        except MountError as exc:
+            log.info("cryptsetup 无法打开卷 %s（%s），改用 dislocker", part.path, exc)
+            rt.dm_name = None
             await run_dislocker(
                 device=part.path,
                 secret=secret,
@@ -220,16 +310,6 @@ class MountManager:
             )
             rt.engine = "dislocker"
             target = part.dislocker_file
-        except DislockerUnsupported:
-            log.info("dislocker 无法解析卷 %s 的元数据，改用 cryptsetup", part.path)
-            rt.dm_name = dm_name_for(part.key)
-            target = await run_cryptsetup_open(
-                device=part.path,
-                secret=secret,
-                readonly=readonly,
-                dm_name=rt.dm_name,
-            )
-            rt.engine = "cryptsetup"
         rt.credential_kind = CredentialKind(kind)
         rt.mount_dir = str(part.mount_dir)
 
@@ -293,14 +373,36 @@ class MountManager:
         part = self._partition(key)
         async with self._lock_for(key):
             rt = self._volumes[key]
-            if rt.state != VolumeState.MOUNTED:
+            # 以内核挂载实况为准（状态机可能因上次失败停在中间态）
+            live = await asyncio.to_thread(os.path.ismount, part.fs_dir)
+            if not live:
+                # 挂载已不在：清理可能残留的 FUSE 守护进程/dm 映射/目录后复位，
+                # 不允许“假成功”——状态必须与内核实况一致
+                if part.bitlocker:
+                    with contextlib.suppress(MountError):
+                        await self._teardown_bitlocker(rt, part.mount_dir, lazy=True)
+                await self._remove_dirs(part.mount_dir, ignore_errors=True)
                 rt.state = VolumeState.PRESENT
+                rt.mode = None
+                rt.fs_dir = None
+                rt.mount_dir = None
+                rt.credential_kind = None
                 rt.error = None
-                await self._notify("eject")
+                # 软弹出后卷仍在线：允许已保存凭据下次自动解锁再次尝试
+                rt.auto_unlock_tried = False
+                log.info("%s 安全弹出卷 %s (%s)（挂载已不存在，完成残留清理）",
+                         actor, part.path, key)
+                await self._notify("ejected")
                 return
+            rt.state = VolumeState.UNMOUNTING
+            rt.error = None
+            await self._notify("unmounting")
             try:
                 await self._teardown_locked(part, lazy=False)
             except MountError as exc:
+                # 关键：失败必须回滚为已挂载，否则前端会一直停在“处理中”
+                rt.state = VolumeState.MOUNTED
+                rt.error = str(exc)
                 log.info("%s 弹出 %s (%s) 失败：%s", actor, part.path, key, exc)
                 await self._notify("eject-busy")
                 raise
@@ -310,8 +412,8 @@ class MountManager:
             rt.mount_dir = None
             rt.credential_kind = None
             rt.error = None
-            # 重新插入前，已保存凭据的自动解锁标记保留与否：
-            # 手动弹出后再次插入应能自动解锁，故在 rescan 见到该卷时重置标记
+            # 软弹出后卷仍在线：重置自动解锁标记，已保存凭据下次可再次自动解锁
+            rt.auto_unlock_tried = False
             log.info("%s 安全弹出卷 %s (%s)", actor, part.path, key)
             await self._notify("ejected")
 
@@ -342,7 +444,8 @@ class MountManager:
         rt = self._volumes[part.key]
         rt.state = VolumeState.UNMOUNTING
         await self._notify("unmounting")
-        await umount_filesystem(part.fs_dir, lazy=lazy)
+        # 安全弹出（非 lazy）时先驱逐 SFTP 客户端等占用者；惰性路径直接卸载
+        await umount_filesystem(part.fs_dir, lazy=lazy, evict=not lazy)
         if part.bitlocker:
             await self._teardown_bitlocker(rt, part.mount_dir, lazy)
         await self._remove_dirs(part.mount_dir)
@@ -352,6 +455,9 @@ class MountManager:
     ) -> None:
         """按解锁引擎清理：dislocker 卸 FUSE 挂载点，cryptsetup 关映射设备。"""
         if rt.engine == "cryptsetup" and rt.dm_name:
+            # 前台型 FUSE 守护进程卸载后可能仍持有 dm 块设备，
+            # 不关进程 cryptsetup close 会 EBUSY
+            await kill_fuse_daemons(rt.dm_name, str(mount_dir / "fs"))
             try:
                 await run_cryptsetup_close(rt.dm_name)
             except MountError:
@@ -371,6 +477,7 @@ class MountManager:
             except MountError:
                 pass
         if rt is not None and rt.dm_name:
+            await kill_fuse_daemons(rt.dm_name, str(fs_dir), str(mount_dir))
             try:
                 await run_cryptsetup_close(rt.dm_name)
             except MountError:
@@ -394,6 +501,9 @@ class MountManager:
             if rt.mount_dir:
                 await umount_filesystem(Path(rt.mount_dir), lazy=True)
             if rt.dm_name:
+                await kill_fuse_daemons(
+                    rt.dm_name, rt.fs_dir or "", rt.mount_dir or ""
+                )
                 try:
                     await run_cryptsetup_close(rt.dm_name)
                 except MountError:

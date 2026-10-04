@@ -38,5 +38,27 @@ services:
       # udev 设备数据库：供 lsblk / blkid 正确识别设备型号与文件系统（只读）
       - /run/udev:/run/udev:ro
 
-      # 应用数据（“记住此卷”加密凭据、日志）
+      # 应用数据（“记住此卷”加密凭据、日志、SSH 主机密钥）
       - ./data:/app/data
+
+  # 可选 HTTPS 反代（自签证书，默认不启动）：
+  #   docker compose --profile tls up -d
+  # 然后访问 https://<宿主机IP>:8443 ；首次打开需在浏览器手动信任证书
+  caddy:
+    image: caddy:2-bookworm
+    container_name: blockusbread-caddy
+    restart: unless-stopped
+    profiles: ["tls"]
+    depends_on:
+      - blockusbread
+    ports:
+      - "${HTTPS_PORT:-8443}:8443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # 自签证书与配置持久化，重建容器不重复签发
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

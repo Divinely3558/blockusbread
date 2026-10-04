@@ -1,7 +1,7 @@
 [project]
 name = "blockusbread"
-version = "0.1.0"
-description = "在 Docker 中解密挂载 BitLocker USB 硬盘，并通过 Samba 共享读取"
+version = "0.2.0"
+description = "在 Docker 中解密挂载 BitLocker USB 硬盘，并通过 SFTP 共享读取"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -9,4 +9,22 @@ dependencies = [
     "uvicorn[standard]>=0.54.0",
     "itsdangerous>=2.2.0",
     "cryptography>=45.0.0",
+    "python-multipart>=0.0.32",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "ruff>=0.16.10",
+]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"

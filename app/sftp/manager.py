@@ -32,9 +32,11 @@ _SSHD_CONF_TEMPLATE = """\
 Port {port}
 ListenAddress 0.0.0.0
 
-HostKey /etc/ssh/ssh_host_rsa_key
-HostKey /etc/ssh/ssh_host_ecdsa_key
-HostKey /etc/ssh/ssh_host_ed25519_key
+# 主机密钥持久化在数据卷（data/ssh）：容器重建后指纹不变，
+# 客户端不会反复收到“主机密钥已变更”的中间人警告
+HostKey {key_dir}/ssh_host_ed25519_key
+HostKey {key_dir}/ssh_host_rsa_key
+HostKey {key_dir}/ssh_host_ecdsa_key
 
 # ADMIN_USER 是 UID 0 的 root 别名，OpenSSH 对 UID 0 账号按 root 策略放行
 PermitRootLogin yes
@@ -45,6 +47,10 @@ PermitEmptyPasswords no
 UsePAM yes
 PrintMotd no
 AcceptEnv LANG LC_*
+
+# 防爆破：单连接认证尝试上限 3 次，20 秒未完成认证即断开
+MaxAuthTries 3
+LoginGraceTime 20
 
 # 仅允许 SFTP：关闭端口转发 / 隧道 / X11，shell 为 nologin 禁止交互式登录
 X11Forwarding no
@@ -133,6 +139,7 @@ class SftpManager:
                 port=config.SFTP_PORT,
                 user=self._settings.admin_user,
                 root=str(config.MOUNT_ROOT),
+                key_dir=str(config.SSH_KEY_DIR),
             ),
             encoding="utf-8",
         )
@@ -149,16 +156,36 @@ class SftpManager:
         os.chmod(config.MOUNT_ROOT, 0o755)
 
     async def _ensure_host_keys(self) -> None:
-        """生成缺失的主机密钥（ssh-keygen -A 幂等）。"""
-        proc = await asyncio.create_subprocess_exec(
-            "ssh-keygen", "-A",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-        )
-        out, _ = await proc.communicate()
-        if proc.returncode != 0:
-            detail = out.decode("utf-8", "replace").strip()[-200:]
-            raise SftpError(f"生成 SSH 主机密钥失败：{detail or '未知错误'}")
+        """在持久化目录 data/ssh 中准备主机密钥（缺失才生成）。
+
+        sshd 要求私钥仅 root 可读（600）。密钥随数据卷保留，
+        容器重建 / 镜像升级后客户端看到的主机指纹保持不变。
+        """
+        key_dir = config.SSH_KEY_DIR
+        key_dir.mkdir(parents=True, exist_ok=True)
+        os.chown(key_dir, 0, 0)
+        os.chmod(key_dir, 0o700)
+
+        for key_type in ("ed25519", "rsa", "ecdsa"):
+            key_path = key_dir / f"ssh_host_{key_type}_key"
+            if key_path.exists():
+                os.chmod(key_path, 0o600)
+                continue
+            log.info("首次启动：生成 SSH 主机密钥 %s", key_path.name)
+            proc = await asyncio.create_subprocess_exec(
+                "ssh-keygen", "-q", "-t", key_type,
+                "-f", str(key_path), "-N", "", "-C", "",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                detail = out.decode("utf-8", "replace").strip()[-200:]
+                raise SftpError(f"生成 SSH 主机密钥失败：{detail or '未知错误'}")
+            os.chmod(key_path, 0o600)
+            pub = key_path.with_suffix(key_path.suffix + ".pub")
+            if pub.exists():
+                os.chmod(pub, 0o644)
 
     async def _ensure_user(self) -> None:
         """创建 UID 0 的 root 别名系统用户；已存在则校正家目录与 shell。

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -19,6 +20,11 @@ class SecretsStore:
         self._lock = threading.Lock()
         db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(db_path), check_same_thread=False)
+        # 凭据库收紧为仅 owner 可读写
+        try:
+            os.chmod(db_path, 0o600)
+        except OSError:
+            log.warning("无法设置 %s 权限为 600", db_path)
         self._conn.execute(
             """
             CREATE TABLE IF NOT EXISTS volume_secrets (

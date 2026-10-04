@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app import config
+from app.devices.smart import query_smart
 from app.mounts.commands import MountError
 from app.mounts.manager import VolumeNotFound
 from app.sftp.manager import InvalidCredentials
+from app.web.ratelimit import client_ip
 from app.web.sessions import COOKIE_MAX_AGE, COOKIE_NAME
 
 router = APIRouter(prefix="/api")
+log = logging.getLogger("web.api")
 
 # ---------------------------------------------------------------- 依赖
 
@@ -64,14 +68,30 @@ class MountBody(BaseModel):
 @router.post("/auth/login")
 async def login(body: LoginBody, request: Request, response: Response):
     sftp = get_sftp(request)
+    ip = client_ip(request)
+    limiter = request.app.state.login_limiter
+    retry_after = limiter.blocked_for(ip)
+    if retry_after:
+        log.warning("登录限流：%s 尝试过于频繁，要求 %d 秒后再试", ip, retry_after)
+        raise HTTPException(
+            status_code=429,
+            detail=f"尝试过于频繁，请 {retry_after} 秒后再试",
+            headers={"Retry-After": str(retry_after)},
+        )
     try:
         await sftp.verify_password(body.username, body.password)
     except InvalidCredentials as exc:
+        limiter.failure(ip)
+        log.warning("登录失败：%s 尝试账号 %s 被拒", ip, body.username)
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    limiter.reset(ip)
     signed = get_sessions(request).create(body.username)
+    # 经 HTTPS 反代（X-Forwarded-Proto: https）访问时下发 Secure cookie
+    secure = request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
     response.set_cookie(
         COOKIE_NAME, signed,
         max_age=COOKIE_MAX_AGE, httponly=True, samesite="lax", path="/",
+        secure=secure,
     )
     return {"username": body.username}
 
@@ -124,6 +144,36 @@ async def list_disks(request: Request, _: dict = Depends(current_session)):
 async def volume_speeds(request: Request, _: dict = Depends(current_session)):
     """各已挂载卷的实时传输速率（字节/秒）：rx=下载（读盘），tx=上传（写盘）。"""
     return request.app.state.speeds.rates()
+
+
+@router.get("/usage")
+async def volume_usage(request: Request, _: dict = Depends(current_session)):
+    """各已挂载卷容量（字节）：total/used/avail。"""
+    return await get_manager(request).usage()
+
+
+@router.get("/sessions")
+async def sftp_sessions(request: Request, _: dict = Depends(current_session)):
+    """当前 SFTP 连接数、登录用户与各卷打开中的文件。"""
+    return request.app.state.speeds.session_info()
+
+
+def _busy_detail(request: Request, keys: list[str], message: str) -> str:
+    """卸载失败（busy）时把占用文件拼进错误文案。"""
+    names: list[str] = []
+    seen: set[str] = set()
+    for key in keys:
+        for row in request.app.state.speeds.open_files_for(key):
+            label = f"{row['user']}:{row['path'] or '/'}"
+            if label not in seen:
+                seen.add(label)
+                names.append(label)
+    if names:
+        shown = "、".join(names[:8])
+        if len(names) > 8:
+            shown += f" 等 {len(names)} 个"
+        return f"{message}（仍被占用：{shown}）"
+    return message
 
 
 @router.post("/rescan")
@@ -180,12 +230,16 @@ async def eject_volume(
     session: dict = Depends(current_session),
 ):
     manager = get_manager(request)
+    from app.transfers.api import _ensure_not_transferring
+    _ensure_not_transferring(request, key)
     try:
         await manager.eject_volume(key, actor=session["username"])
     except VolumeNotFound as exc:
         raise HTTPException(status_code=404, detail="卷不存在或已拔出") from exc
     except MountError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409, detail=_busy_detail(request, [key], str(exc))
+        ) from exc
     return {"ok": True, "safeToRemove": True}
 
 
@@ -196,12 +250,23 @@ async def eject_disk(
     session: dict = Depends(current_session),
 ):
     manager = get_manager(request)
+    from app.transfers.api import _ensure_not_transferring
+    keys = [
+        part["key"]
+        for disk in manager.snapshot().get("disks", [])
+        if disk.get("id") == disk_id
+        for part in disk.get("partitions", [])
+    ]
+    for key in keys:
+        _ensure_not_transferring(request, key)
     try:
         count = await manager.eject_disk(disk_id, actor=session["username"])
     except VolumeNotFound as exc:
         raise HTTPException(status_code=404, detail="磁盘不存在或已拔出") from exc
     except MountError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=409, detail=_busy_detail(request, keys, str(exc))
+        ) from exc
     return {"ok": True, "unmounted": count, "safeToRemove": True}
 
 
@@ -213,6 +278,23 @@ async def forget_credential(
 ):
     await get_manager(request).forget(key)
     return {"ok": True}
+
+
+@router.get("/disks/{disk_id}/smart")
+async def disk_smart(
+    disk_id: str,
+    request: Request,
+    force: bool = False,
+    _: dict = Depends(current_session),
+):
+    """整盘 SMART 健康信息（10 分钟缓存；force=1 立即重查）。
+
+    USB 硬盘盒不支持 SAT 透传时返回 status=unavailable，前端不展示。
+    """
+    for disk in get_manager(request).snapshot().get("disks", []):
+        if disk.get("id") == disk_id:
+            return await query_smart(disk["path"], force=force)
+    raise HTTPException(status_code=404, detail="磁盘不存在或已拔出")
 
 
 # ---------------------------------------------------------------- SSE

@@ -17,9 +17,13 @@ from app.events import EventBus
 from app.log import setup_logging
 from app.mounts.manager import MountManager
 from app.mounts.stats import SpeedMonitor
-from app.sftp.manager import SftpManager
 from app.secrets_store import SecretsStore
+from app.sftp.manager import SftpManager
+from app.transfers.api import router as transfers_router
+from app.transfers.jobs import TransferManager
 from app.web.api import router as api_router
+from app.web.files import router as files_router
+from app.web.ratelimit import LoginRateLimiter
 from app.web.sessions import SessionStore
 
 log = logging.getLogger("main")
@@ -45,19 +49,24 @@ async def lifespan(app: FastAPI):
 
     bus = EventBus()
     sessions = SessionStore(settings.session_signing_key)
+    login_limiter = LoginRateLimiter()
     manager = MountManager(bus=bus, secrets=secrets)
     speeds = SpeedMonitor(manager)
     sftp = SftpManager(settings)
+    transfers = TransferManager(bus=bus)
 
     # SFTP 服务先行（挂载卷通过它对外共享）
     await sftp.start()
+    await transfers.start()
 
     # 对外暴露给路由层
     app.state.bus = bus
     app.state.sessions = sessions
+    app.state.login_limiter = login_limiter
     app.state.manager = manager
     app.state.sftp = sftp
     app.state.speeds = speeds
+    app.state.transfers = transfers
     app.state.settings = settings
 
     # 传输速率采样（按已挂载卷，2 秒一期）
@@ -114,6 +123,8 @@ app = FastAPI(
 )
 
 app.include_router(api_router)
+app.include_router(files_router)
+app.include_router(transfers_router)
 
 
 class _NoCacheStatic(StaticFiles):
