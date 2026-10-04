@@ -1,4 +1,4 @@
-"""BlockUSBRead 应用入口：装配 Samba、设备监听、挂载编排器与管理 Web 层。"""
+"""BlockUSBRead 应用入口：装配 SFTP、设备监听、挂载编排器与管理 Web 层。"""
 
 from __future__ import annotations
 
@@ -16,7 +16,8 @@ from app.devices.monitor import UdevMonitor
 from app.events import EventBus
 from app.log import setup_logging
 from app.mounts.manager import MountManager
-from app.samba.manager import SambaManager
+from app.mounts.stats import SpeedMonitor
+from app.sftp.manager import SftpManager
 from app.secrets_store import SecretsStore
 from app.web.api import router as api_router
 from app.web.sessions import SessionStore
@@ -45,17 +46,22 @@ async def lifespan(app: FastAPI):
     bus = EventBus()
     sessions = SessionStore(settings.session_signing_key)
     manager = MountManager(bus=bus, secrets=secrets)
-    samba = SambaManager(settings)
+    speeds = SpeedMonitor(manager)
+    sftp = SftpManager(settings)
 
-    # Samba 先行（管理页登录校验依赖它）
-    await samba.start()
+    # SFTP 服务先行（挂载卷通过它对外共享）
+    await sftp.start()
 
     # 对外暴露给路由层
     app.state.bus = bus
     app.state.sessions = sessions
     app.state.manager = manager
-    app.state.samba = samba
+    app.state.sftp = sftp
+    app.state.speeds = speeds
     app.state.settings = settings
+
+    # 传输速率采样（按已挂载卷，2 秒一期）
+    await speeds.start()
 
     # 清理上次异常退出可能残留的挂载与 cryptsetup 映射设备
     await manager.cleanup_orphans()
@@ -84,9 +90,10 @@ async def lifespan(app: FastAPI):
         monitor.stop()
         monitor.join(timeout=3)
         await manager.unmount_all()
+        await speeds.stop()
         if secrets is not None:
             secrets.close()
-        await samba.stop()
+        await sftp.stop()
         log.info("已退出")
 
 
@@ -102,7 +109,7 @@ async def _periodic_rescan(manager: MountManager) -> None:
 app = FastAPI(
     title="BlockUSBRead",
     version=__version__,
-    description="解密挂载 BitLocker USB 硬盘并通过 Samba 共享读取",
+    description="解密挂载 BitLocker USB 硬盘并通过 SFTP 共享读取",
     lifespan=lifespan,
 )
 
@@ -128,7 +135,7 @@ async def index():
 
 @app.get("/health", include_in_schema=False)
 async def health():
-    samba_alive = False
-    if hasattr(app.state, "samba"):
-        samba_alive = app.state.samba.alive
-    return JSONResponse({"status": "ok", "version": __version__, "samba": samba_alive})
+    sftp_alive = False
+    if hasattr(app.state, "sftp"):
+        sftp_alive = app.state.sftp.alive
+    return JSONResponse({"status": "ok", "version": __version__, "sftp": sftp_alive})

@@ -457,6 +457,31 @@ code {
 .part-meta { color: var(--text-secondary); font-size: 12px; margin-top: 3px; }
 .part-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
+/* 实时传输速率（↓ 下载 / ↑ 上传） */
+.speed-meter {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.speed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+.speed-arrow { font-size: 13px; font-weight: 700; line-height: 1; }
+.speed-rx { background: #ecfdf5; border-color: #a7f3d0; color: #047857; }
+.speed-tx { background: #fff7ed; border-color: #fed7aa; color: #c2410c; }
+.speed-meter.idle { opacity: 0.5; }
+
 /* 状态胶囊（带圆点） */
 .tag {
   display: inline-flex;
@@ -539,8 +564,8 @@ code {
 .unlock-options { display: flex; flex-direction: column; gap: 2px; margin: 10px 0 12px; }
 .unlock-submit { margin-top: 2px; }
 
-/* SMB 路径行 */
-.smb-line {
+/* SFTP 路径行 */
+.sftp-line {
   flex-basis: 100%;
   width: 100%;
   display: flex;
@@ -550,8 +575,8 @@ code {
   font-size: 12.5px;
   color: var(--text-secondary);
 }
-.smb-line .ic { width: 15px; height: 15px; color: var(--primary); }
-.smb-line code {
+.sftp-line .ic { width: 15px; height: 15px; color: var(--primary); }
+.sftp-line code {
   background: var(--surface-2);
   border: 1px solid var(--divider);
   padding: 3px 9px;
@@ -700,7 +725,9 @@ code {
   .part-main { flex-direction: column; align-items: stretch; }
   .part-actions { width: 100%; }
   .part-actions .btn { flex: 1 1 0; justify-content: center; }
-  .smb-line { flex-wrap: wrap; }
+  .speed-meter { width: 100%; margin-left: 0; justify-content: center; gap: 10px; }
+  .speed { flex: 1 1 0; justify-content: center; max-width: 150px; }
+  .sftp-line { flex-wrap: wrap; }
   .desktop-only { display: none !important; }
   .login-card { padding: 28px 22px 24px; }
   .unlock-panel { padding: 13px; }

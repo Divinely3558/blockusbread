@@ -23,11 +23,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev
 
 ############################################################
-# 运行阶段：uv Python 基础镜像 + 磁盘/BitLocker/Samba 系统工具
+# 运行阶段：uv Python 基础镜像 + 磁盘/BitLocker/SFTP 系统工具
 ############################################################
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS runtime
 
-# mount/dislocker-fuse/smbd 等特权操作要求 root（compose 以 privileged 运行）
+# mount/dislocker-fuse/sshd 等特权操作要求 root（compose 以 privileged 运行）
 USER root
 
 # 系统工具说明：
@@ -35,8 +35,7 @@ USER root
 #   cryptsetup     读取/解密新版 BitLocker 加密卷（内核 dm-crypt）
 #   ntfs-3g        挂载解密出的 NTFS 卷 / 直接挂载 NTFS 分区
 #   exfatprogs     exFAT 文件系统挂载辅助（mount.exfat）
-#   samba          SMB 共享服务（smbd），把 /mnt/usb 共享给本机/局域网
-#   smbclient      管理后端用它校验 SMB 账号密码
+#   openssh-server SFTP 服务（sshd + internal-sftp），把 /mnt/usb 共享给本机/局域网
 #   util-linux     mount / umount / lsblk / blkid / losetup
 #   udev           设备硬件数据库，lsblk/blkid 识别型号与文件系统
 #   fuse3          FUSE 文件系统支持（dislocker/ntfs-3g 的挂载底座）
@@ -47,8 +46,7 @@ RUN apt-get update \
         cryptsetup \
         ntfs-3g \
         exfatprogs \
-        samba \
-        smbclient \
+        openssh-server \
         util-linux \
         udev \
         fuse3 \
@@ -61,14 +59,14 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY . .
 
-# SMB 共享根目录与应用数据目录
-RUN mkdir -p /mnt/usb /app/data/logs
+# SFTP 共享根目录、sshd 特权分离目录与应用数据目录
+RUN mkdir -p /mnt/usb /run/sshd /app/data/logs
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
-EXPOSE 8000 445
+EXPOSE 8000 22
 
 # 健康检查（由 FastAPI 提供 /health）
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \

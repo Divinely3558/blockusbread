@@ -9,6 +9,7 @@ const state = {
   rememberEnabled: false,
   share: null,
   evtSource: null,
+  speedTimer: null,
   lastSig: null,
 };
 
@@ -26,6 +27,14 @@ function humanSize(bytes) {
   let v = bytes, i = 0;
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return `${v >= 100 || i === 0 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
+}
+
+function humanRate(bps) {
+  if (!bps || bps < 1) return "0 B/s";
+  const units = ["B/s", "KB/s", "MB/s", "GB/s"];
+  let v = bps, i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return `${v >= 100 ? Math.round(v) : v.toFixed(1)} ${units[i]}`;
 }
 
 function toast(msg, kind = "") {
@@ -76,6 +85,7 @@ async function loadVersion() {
 
 function showLogin() {
   closeEvents();
+  closeSpeeds();
   state.lastSig = null;
   $("#app").hidden = true;
   $("#login").hidden = false;
@@ -89,6 +99,38 @@ function enterApp(username) {
   loadShareInfo();
   refreshDisks();
   openEvents();
+  openSpeeds();
+}
+
+// ------------------------------------------------------------ 传输速率
+
+async function pollSpeeds() {
+  try {
+    const data = await api("GET", "/api/speeds");
+    document.querySelectorAll(".speed-meter").forEach((el) => {
+      const s = data[el.dataset.speedKey] || {};
+      const rx = s.rx || 0;
+      const tx = s.tx || 0;
+      el.querySelector(".speed-rx .speed-val").textContent = humanRate(rx);
+      el.querySelector(".speed-tx .speed-val").textContent = humanRate(tx);
+      el.classList.toggle("idle", rx < 1 && tx < 1);
+    });
+  } catch {
+    /* 401 或瞬时错误：下个周期自然恢复/转登录页 */
+  }
+}
+
+function openSpeeds() {
+  closeSpeeds();
+  pollSpeeds();
+  state.speedTimer = setInterval(pollSpeeds, 2000);
+}
+
+function closeSpeeds() {
+  if (state.speedTimer) {
+    clearInterval(state.speedTimer);
+    state.speedTimer = null;
+  }
 }
 
 async function loadShareInfo() {
@@ -105,16 +147,11 @@ function renderShareBanner() {
   const s = state.share;
   if (!s) { banner.hidden = true; return; }
   banner.innerHTML = `
-    <div class="banner-title"><i class="ic ic-network"></i>SMB 共享已就绪（账号同网页登录）</div>
+    <div class="banner-title"><i class="ic ic-network"></i>SFTP 共享已就绪（账号同网页登录）</div>
     <div class="banner-line">
-      <span class="banner-label">Windows：</span>
-      <code>${esc(s.unc)}</code>
-      <button class="btn mini js-copy" data-copy="${esc(s.unc)}" data-label="Windows 路径">复制</button>
-    </div>
-    <div class="banner-line">
-      <span class="banner-label">macOS / Linux / 手机播放器（VLC 等）：</span>
+      <span class="banner-label">连接地址：</span>
       <code>${esc(s.uri)}</code>
-      <button class="btn mini js-copy" data-copy="${esc(s.uri)}" data-label="SMB 地址">复制</button>
+      <button class="btn mini js-copy" data-copy="${esc(s.uri)}" data-label="SFTP 地址">复制</button>
     </div>
     <div class="banner-line">
       <span class="banner-label">账号：</span>
@@ -124,7 +161,7 @@ function renderShareBanner() {
       <code class="pw-mask" title="密码已隐藏，点右侧按钮可复制">${"•".repeat(Math.max(8, String(s.password).length))}</code>
       <button class="btn mini js-copy" data-copy="${esc(s.password)}" data-label="密码">复制密码</button>
     </div>
-    <div class="banner-sub">挂载后的每个卷在共享内对应 &lt;磁盘ID&gt;/part&lt;序号&gt;/fs 目录；密码即网页登录密码，页面不显示明文</div>`;
+    <div class="banner-sub">挂载后的每个卷对应 &lt;磁盘ID&gt;/part&lt;序号&gt;/fs 目录；Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，手机播放器（VLC 等）可直接添加 SFTP；密码即网页登录密码，页面不显示明文</div>`;
   banner.hidden = false;
 }
 
@@ -300,19 +337,24 @@ function renderActions(p) {
     return `<span class="tag busy"><i class="ic ic-loader ic-spin"></i>处理中…</span>`;
   }
   if (p.state === "mounted") {
-    const unc = smbPath(p, "unc");
+    const sftp = sftpUrl(p);
     return `
       <span class="tag ${p.mode === "rw" ? "rw" : "ro"}">
         ${p.mode === "rw" ? "读写模式" : "只读模式"}
       </span>
-      <button class="btn primary js-copy" data-copy="${esc(unc)}" data-label="卷共享路径">
-        <i class="ic ic-copy"></i>复制 SMB 路径
+      <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="卷 SFTP 路径">
+        <i class="ic ic-copy"></i>复制 SFTP 路径
       </button>
       <button class="btn danger" onclick="ejectVolume('${esc(p.key)}')"><i class="ic ic-eject"></i>安全弹出</button>
       ${p.remembered
         ? `<button class="btn" onclick="forgetCredential('${esc(p.key)}')">忘记凭据</button>`
         : ""}
-      <div class="smb-line"><i class="ic ic-folder"></i><code>${esc(unc)}</code></div>`;
+      <span class="speed-meter idle" data-speed-key="${esc(p.key)}"
+            title="实时传输速度：↓ 下载（U盘 → 客户端）/ ↑ 上传（客户端 → U盘）">
+        <span class="speed speed-rx"><span class="speed-arrow">↓</span><span class="speed-val">0 B/s</span></span>
+        <span class="speed speed-tx"><span class="speed-arrow">↑</span><span class="speed-val">0 B/s</span></span>
+      </span>
+      <div class="sftp-line"><i class="ic ic-folder"></i><code>${esc(sftp)}</code></div>`;
   }
   if (!p.supported) {
     return `<span class="tag unsupported">不支持${p.fstype ? "：" + esc(p.fstype) : ""}</span>`;
@@ -367,14 +409,13 @@ function renderActionPanel(p) {
     </div>`;
 }
 
-function smbPath(p, form) {
+function sftpUrl(p) {
   const sub = `${p.diskId}/part${p.number}/fs`;
   const s = state.share;
   const host = s ? s.host : location.hostname;
-  const share = s ? s.share : "usb";
-  return form === "uri"
-    ? `smb://${host}/${share}/${sub}`
-    : `\\\\${host}\\${share}\\${sub.replaceAll("/", "\\")}`;
+  const port = s ? s.port : 2222;
+  const auth = s && s.username ? `${s.username}@` : "";
+  return `sftp://${auth}${host}:${port}/${sub}`;
 }
 
 // ------------------------------------------------------------ 操作

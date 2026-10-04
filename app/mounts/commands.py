@@ -107,7 +107,7 @@ def _safe_env() -> dict[str, str]:
 def _friendly_error(cmd: str, detail: str) -> str:
     low = detail.lower()
     if "target is busy" in low or "device or resource busy" in low:
-        return "设备正忙：仍有文件被占用，请先关闭 SMB 客户端中打开的文件后重试"
+        return "设备正忙：仍有文件被占用，请先关闭 SFTP 客户端中打开的文件后重试"
     if cmd == "dislocker":
         if any(w in low for w in ("password", "recovery", "decrypt", "verification")):
             return "BitLocker 凭据错误或卷数据损坏，解锁失败"

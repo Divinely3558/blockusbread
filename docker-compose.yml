@@ -9,27 +9,28 @@ services:
 
     # 端口：
     #   8000 管理网页（解锁/挂载/弹出）
-    #   445  SMB 共享（\\主机IP\usb 访问已挂载的盘）
-    # 若宿主机自身的 SMB 服务占用 445，可在 .env 设置 SMB_HOST_PORT（如 1445），
-    # 此时 Linux/macOS/VLC 可带端口连接；Windows 资源管理器仅支持 445，需停掉宿主 SMB
+    #   2222 SFTP 共享（sftp://主机IP:2222 访问已挂载的盘）
+    # 若宿主机的 2222 被占用，可在 .env 设置 SFTP_HOST_PORT 改为其他端口
     ports:
       - "8000:8000"
-      - "${SMB_HOST_PORT:-445}:445"
+      - "${SFTP_HOST_PORT:-2222}:22"
 
     # 读取块设备 / 执行 mount / FUSE 挂载必须特权运行
     privileged: true
 
     environment:
       TZ: Asia/Shanghai
-      # 管理员账号（管理页登录 + SMB 共享共用）
+      # 管理员账号（管理页登录 + SFTP 共用）
       ADMIN_USER: ${ADMIN_USER:-admin}
-      # 必填：管理员密码（管理页 + SMB 共用；改密码改这里后重建容器即可）
+      # 必填：管理员密码（管理页 + SFTP 共用；改密码改这里后重建容器即可）
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:?请在 .env 或环境变量中设置 ADMIN_PASSWORD}
       # 必填：「记住此卷」凭据加密密钥（openssl rand -base64 32）；
       # 一经使用请勿更换，否则已保存凭据无法解密
       SECRET_KEY: ${SECRET_KEY:?请在 .env 或环境变量中设置 SECRET_KEY}
       # 日志级别：INFO / DEBUG
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # SFTP 宿主机映射端口（仅用于管理页展示连接地址，需与上方端口映射一致）
+      SFTP_HOST_PORT: ${SFTP_HOST_PORT:-2222}
 
     volumes:
       # 块设备目录：支持 USB 硬盘热插拔后在容器内即时可见

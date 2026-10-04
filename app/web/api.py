@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from app import config
 from app.mounts.commands import MountError
 from app.mounts.manager import VolumeNotFound
-from app.samba.manager import InvalidCredentials
+from app.sftp.manager import InvalidCredentials
 from app.web.sessions import COOKIE_MAX_AGE, COOKIE_NAME
 
 router = APIRouter(prefix="/api")
@@ -28,8 +28,8 @@ def get_manager(request: Request):
     return request.app.state.manager
 
 
-def get_samba(request: Request):
-    return request.app.state.samba
+def get_sftp(request: Request):
+    return request.app.state.sftp
 
 
 async def current_session(request: Request) -> dict:
@@ -63,9 +63,9 @@ class MountBody(BaseModel):
 
 @router.post("/auth/login")
 async def login(body: LoginBody, request: Request, response: Response):
-    samba = get_samba(request)
+    sftp = get_sftp(request)
     try:
-        await samba.verify_password(body.username, body.password)
+        await sftp.verify_password(body.username, body.password)
     except InvalidCredentials as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     signed = get_sessions(request).create(body.username)
@@ -94,20 +94,21 @@ async def me(session: dict = Depends(current_session)):
 
 @router.get("/share")
 async def share_info(request: Request, _: dict = Depends(current_session)):
-    """SMB 共享连接信息（主机名取用户实际访问管理页所用的地址）。
+    """SFTP 连接信息（主机名取用户实际访问管理页所用的地址）。
 
     账号密码与网页登录相同，随接口返回仅为方便用户在客户端填写；
     该接口本身要求已登录会话才能访问。
     """
     host = request.headers.get("host", "").split(":")[0] or "localhost"
     settings = request.app.state.settings
+    port = config.SFTP_HOST_PORT
     return {
-        "share": config.SMB_SHARE_NAME,
+        "scheme": "sftp",
         "host": host,
-        "unc": f"\\\\{host}\\{config.SMB_SHARE_NAME}",
-        "uri": f"smb://{host}/{config.SMB_SHARE_NAME}",
+        "port": port,
         "username": settings.admin_user,
         "password": settings.admin_password,
+        "uri": f"sftp://{settings.admin_user}@{host}:{port}/",
     }
 
 
@@ -117,6 +118,12 @@ async def share_info(request: Request, _: dict = Depends(current_session)):
 @router.get("/disks")
 async def list_disks(request: Request, _: dict = Depends(current_session)):
     return get_manager(request).snapshot()
+
+
+@router.get("/speeds")
+async def volume_speeds(request: Request, _: dict = Depends(current_session)):
+    """各已挂载卷的实时传输速率（字节/秒）：rx=下载（读盘），tx=上传（写盘）。"""
+    return request.app.state.speeds.rates()
 
 
 @router.post("/rescan")

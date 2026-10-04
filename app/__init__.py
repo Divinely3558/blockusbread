@@ -1,4 +1,4 @@
-"""BlockUSBRead — 在容器中解密挂载 BitLocker USB 硬盘，并通过 Samba 共享读取。"""
+"""BlockUSBRead — 在容器中解密挂载 BitLocker USB 硬盘，并通过 SFTP 共享读取。"""
 
 from pathlib import Path
 

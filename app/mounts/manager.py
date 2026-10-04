@@ -71,6 +71,14 @@ class MountManager:
                     return part
         raise VolumeNotFound(key)
 
+    def mounted_volumes(self):
+        """枚举当前处于已挂载状态的 (PartitionInfo, VolumeRuntime)。"""
+        for disk in self._disks:
+            for part in disk.partitions:
+                runtime = self._volumes.get(part.key)
+                if runtime is not None and runtime.state == VolumeState.MOUNTED:
+                    yield part, runtime
+
     def _lock_for(self, key: str) -> asyncio.Lock:
         return self._volume_locks.setdefault(key, asyncio.Lock())
 

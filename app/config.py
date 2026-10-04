@@ -14,10 +14,13 @@ DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 LOG_DIR = DATA_DIR / "logs"
 SECRETS_DATABASE = DATA_DIR / "secrets.db"
 
-# Samba 共享配置
-SMB_CONF = Path("/etc/samba/smb.conf")
-SMB_SHARE_NAME = os.getenv("SMB_SHARE_NAME", "usb")
-SMB_PORT = int(os.getenv("SMB_PORT", "445"))
+# SFTP 服务配置（容器内 sshd 固定监听 22；SFTP_HOST_PORT 为宿主机映射端口，
+# 仅用于管理页向客户端展示连接地址）
+# 使用自包含的完整配置覆盖发行版默认 sshd_config，避免默认 Subsystem 等
+# 指令与本项目所需配置冲突（如重复声明 Subsystem sftp）
+SFTP_SSHD_CONFIG = Path("/etc/ssh/sshd_config")
+SFTP_PORT = int(os.getenv("SFTP_PORT", "22"))
+SFTP_HOST_PORT = int(os.getenv("SFTP_HOST_PORT", "2222"))
 
 # BitLocker 普通分区允许的文件系统
 SUPPORTED_FSTYPES = {"ntfs", "exfat", "vfat", "fat", "ext2", "ext3", "ext4"}
@@ -53,7 +56,7 @@ def load_settings() -> Settings:
     in_docker = Path("/.dockerenv").exists()
     if not admin_password and in_docker:
         raise ConfigError(
-            "必须设置环境变量 ADMIN_PASSWORD（首次启动的管理页/SMB 共享密码）"
+            "必须设置环境变量 ADMIN_PASSWORD（首次启动的管理页/SFTP 密码）"
         )
     if not admin_password:
         admin_password = "dev-admin-password"
