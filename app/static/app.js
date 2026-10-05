@@ -566,7 +566,7 @@ function renderDisk(disk) {
         <div class="disk-title">
           <span class="disk-icon"><i class="ic ic-external"></i></span>
           <div>
-            <div class="disk-name">${esc(disk.displayName)}</div>
+            <div class="disk-name">${esc(diskTitle(disk))}</div>
             <div class="disk-meta">${meta}</div>
           </div>
         </div>
@@ -1162,6 +1162,15 @@ const jobsState = { jobs: [] };
 
 function volumeLabel(part, disk) {
   return part.label || `${disk.displayName || disk.id} · 分区 ${part.number}`;
+}
+
+// 磁盘卡片标题：优先显示分区卷标（不带盘符；多分区块不同卷标时用 " / " 连接），
+// 无任何卷标时回退厂商+型号，仍缺失则保持内核设备名（sdc / sdb）
+function diskTitle(disk) {
+  const labels = [...new Set((disk.partitions || [])
+    .map(p => (p.label || "").trim())
+    .filter(Boolean))];
+  return labels.length ? labels.join(" / ") : (disk.displayName || disk.name);
 }
 
 async function openMove(path, name, wantOp = "move") {
