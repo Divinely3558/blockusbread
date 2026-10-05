@@ -219,10 +219,16 @@
         <div class="move-source-name"><i class="ic ic-file"></i><span id="move-src-name">—</span></div>
         <div id="move-hint" class="move-hint"></div>
       </div>
-      <label class="field">
+      <div class="field">
         <span>目标硬盘（仅显示读写模式挂载的卷，只读盘无法接收粘贴）</span>
-        <select id="move-disk-select"></select>
-      </label>
+        <div class="select" id="move-disk-select">
+          <button type="button" class="select-toggle" id="move-disk-toggle" aria-haspopup="listbox" aria-expanded="false">
+            <span id="move-disk-label">—</span>
+            <i class="ic ic-arrow-down"></i>
+          </button>
+          <div class="select-menu" id="move-disk-menu" role="listbox" hidden></div>
+        </div>
+      </div>
       <label class="move-keep" id="move-keep-row" hidden>
         <input type="checkbox" id="move-keep">
         <span>保留源文件（复制一份，不移动）</span>

@@ -1192,26 +1192,58 @@ async function openMove(path, name, wantOp = "move") {
   $("#move-keep").checked = moveState.op === "copy";
   updateMoveModeUI();
 
-  // 按 本地 / 外接 / 远程 分组渲染下拉选项
+  // 按 本地 / 外接 / 远程 分组渲染自定义下拉选项
   const groups = [];
   for (const t of targets) {
     let g = groups.find((x) => x.title === t.group);
     if (!g) { g = { title: t.group, items: [] }; groups.push(g); }
     g.items.push(t);
   }
-  const sel = $("#move-disk-select");
-  sel.innerHTML = groups.map((g) =>
-    `<optgroup label="${esc(g.title)}">${g.items.map((t) =>
-      `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join("")}</optgroup>`).join("");
+  $("#move-disk-menu").innerHTML = groups.map((g) =>
+    `<div class="select-group">${esc(g.title)}</div>${g.items.map((t) =>
+      `<button type="button" class="select-option" role="option" data-key="${esc(t.key)}">${esc(t.label)}</button>`).join("")}`).join("");
   // 默认选另一个存储（跨存储移动是主要场景）
   const other = targets.find((t) => t.key !== fsState.key) || targets[0];
-  sel.value = other.key;
   moveState.destKey = other.key;
+  setMoveDiskLabel(other.key);
 
   $("#move-confirm").disabled = false;
   $("#move-modal").hidden = false;
   await loadMoveDir("");
 }
+
+// 自定义下拉：标签同步 + 开合与选择
+function setMoveDiskLabel(key) {
+  document.querySelectorAll("#move-disk-menu .select-option").forEach((o) => {
+    o.classList.toggle("active", o.dataset.key === key);
+  });
+  const opt = document.querySelector(`#move-disk-menu .select-option[data-key="${CSS.escape(key || "")}"]`);
+  $("#move-disk-label").textContent = opt ? opt.textContent : "—";
+}
+
+function closeMoveDiskMenu() {
+  $("#move-disk-menu").hidden = true;
+  $("#move-disk-toggle").setAttribute("aria-expanded", "false");
+}
+
+$("#move-disk-toggle").addEventListener("click", () => {
+  const menu = $("#move-disk-menu");
+  menu.hidden = !menu.hidden;
+  $("#move-disk-toggle").setAttribute("aria-expanded", String(!menu.hidden));
+});
+
+$("#move-disk-menu").addEventListener("click", async (e) => {
+  const opt = e.target.closest(".select-option");
+  if (!opt) return;
+  moveState.destKey = opt.dataset.key;
+  setMoveDiskLabel(opt.dataset.key);
+  closeMoveDiskMenu();
+  await loadMoveDir("");
+});
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#move-disk-select")) closeMoveDiskMenu();
+});
 
 function updateMoveModeUI() {
   const isCopy = moveState.op === "copy";
@@ -1265,10 +1297,6 @@ function renderMoveDirs() {
     </div>`).join("");
 }
 
-$("#move-disk-select").addEventListener("change", async (e) => {
-  moveState.destKey = e.target.value;
-  await loadMoveDir("");
-});
 $("#move-crumbs").addEventListener("click", (e) => {
   const btn = e.target.closest(".crumb");
   if (btn) loadMoveDir(btn.dataset.path || "");

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import math
 import os
 import shutil
 import threading
@@ -28,6 +29,8 @@ _COPY_BUFSIZE = 1024 * 1024  # 1 MiB
 _HISTORY_LIMIT = 50
 _ETA_WINDOW_SECONDS = 10.0
 _ETA_MIN_RATE = 1024  # B/s，低于该值视为速率不可信，不下发 ETA
+_ETA_RECOMPUTE_INTERVAL = 5.0  # 剩余时间 5 秒重算一次，避免每秒跳变
+_ETA_SMOOTH_TAU = 30.0  # 速率指数平滑时间常数（秒）：越大越平滑、越小越跟手
 
 
 class TransferConflict(RuntimeError):
@@ -72,18 +75,51 @@ class TransferJob:
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
     # 最近约 10 秒的进度采样 [(monotonic_ts, bytes_done)]，事件循环侧写入
     _samples: list[tuple[float, int]] = field(default_factory=list, repr=False)
+    # (计算时刻, rateBps, etaSeconds)：5 秒内直接复用，防止剩余时间频繁跳变
+    _eta_cache: tuple[float, float, int | None] | None = field(default=None, repr=False)
+    # 平滑后的速率（EWMA 状态）；None 表示尚无基准
+    _rate_ewma: float | None = field(default=None, repr=False)
+    # 上次平滑时的采样时间戳（用于按传输时长计算平滑步长）
+    _last_sample_ts: float | None = field(default=None, repr=False)
 
     def eta_fields(self) -> tuple[float, int | None]:
         """(rateBps, etaSeconds)：滑动窗口估算速率与剩余秒数。
 
-        速率过低（< 1 KiB/s）或总量未知 / 已传完时 etaSeconds 为 None。
+        结果缓存 5 秒（_ETA_RECOMPUTE_INTERVAL），到点才重算，
+        避免剩余时间每秒都在跳；速率过低（< 1 KiB/s）或总量未知 /
+        已传完时 etaSeconds 为 None。
+        """
+        now = time.monotonic()
+        if self._eta_cache is not None and now - self._eta_cache[0] < _ETA_RECOMPUTE_INTERVAL:
+            _, rate, eta = self._eta_cache
+            return rate, eta
+        rate, eta = self._compute_eta()
+        self._eta_cache = (now, rate, eta)
+        return rate, eta
+
+    def _compute_eta(self) -> tuple[float, int | None]:
+        """窗口速率 + 指数平滑。
+
+        10 秒窗口两端点差分对突发 / 卡顿极其敏感，直接算剩余时间会
+        反复大幅跳变；改为对窗口速率做时间常数 30 秒（_ETA_SMOOTH_TAU）
+        的 EWMA：每次重算只向最新速率移动一小步，数值平稳收敛，同时
+        仍能在一两分钟内跟上真实速度变化。首次以窗口速率作为基准；
+        平滑步长按采样时间轴（传输时长）计算，与重算调度无关。
         """
         samples = self._samples
         if len(samples) >= 2 and self.bytes_total > 0:
             t0, b0 = samples[0]
             t1, b1 = samples[-1]
             if t1 > t0:
-                rate = (b1 - b0) / (t1 - t0)
+                recent = (b1 - b0) / (t1 - t0)
+                if self._rate_ewma is None:
+                    rate = recent
+                else:
+                    gap = max(t1 - (self._last_sample_ts or t1), 0.0)
+                    alpha = 1.0 - math.exp(-gap / _ETA_SMOOTH_TAU)
+                    rate = self._rate_ewma + alpha * (recent - self._rate_ewma)
+                self._rate_ewma = rate
+                self._last_sample_ts = t1
                 remaining = self.bytes_total - self.bytes_done
                 if rate >= _ETA_MIN_RATE and remaining > 0:
                     return round(rate, 1), max(1, int(remaining / rate))

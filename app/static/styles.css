@@ -1152,7 +1152,13 @@ code {
   padding-right: 4px;
 }
 .move-body .field { margin: 0; }
-.move-body select {
+/* 目标硬盘自定义下拉（替代浏览器原生 select 弹层，样式与主题一致） */
+.select { position: relative; }
+.select-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   width: 100%;
   padding: 9px 12px;
   border: 1px solid var(--border);
@@ -1160,18 +1166,70 @@ code {
   background: var(--surface);
   font-size: 14px;
   color: var(--text-primary);
-  appearance: none;
-  -webkit-appearance: none;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
-  background-repeat: no-repeat;
-  background-position: right 12px center;
-  padding-right: 36px;
+  text-align: left;
   cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
-.move-body select:focus {
+.select-toggle:hover { border-color: var(--primary); }
+.select-toggle:focus-visible {
   border-color: var(--primary);
   box-shadow: 0 0 0 3.5px rgba(52, 211, 153, 0.15);
   outline: none;
+}
+.select-toggle span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.select-toggle .ic {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  color: var(--text-secondary);
+  transition: transform 0.15s ease;
+}
+.select-toggle[aria-expanded="true"] .ic { transform: rotate(180deg); }
+.select-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 4px;
+  /* 不透明底色：浮层压在文件夹列表等内容上，不能透出下层文字 */
+  background: #243140;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  z-index: 30;
+}
+.select-group {
+  padding: 7px 10px 3px;
+  font-size: 11.5px;
+  color: var(--text-secondary);
+  letter-spacing: 0.4px;
+}
+.select-option {
+  display: block;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 7px;
+  background: none;
+  font-size: 13.5px;
+  color: var(--text-primary);
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.select-option:hover { background: var(--surface-2); color: var(--primary); }
+.select-option.active {
+  background: rgba(52, 211, 153, 0.12);
+  color: var(--primary);
 }
 .move-source {
   padding: 12px 14px;

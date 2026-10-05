@@ -87,6 +87,33 @@ def test_eta_window_keeps_recent_10s():
     assert all(ts >= 5.0 for ts, _ in job._samples)
 
 
+def test_eta_smoothed_by_ewma():
+    """速率骤降时 EWMA 只向新值靠近一小步，剩余时间不再大幅跳变。"""
+    job = _job(total=100_000)
+    job.bytes_total = 100_000
+    job.bytes_done = 0
+    job.record_sample(0.0)
+    job.bytes_done = 10_000
+    job.record_sample(10.0)          # 窗口速率 1000 B/s
+    rate1, _ = job._compute_eta()
+    assert rate1 == 1000.0           # 首次以窗口速率作为基准
+
+    job.bytes_done = 12_000
+    job.record_sample(20.0)          # 窗口速率骤降至 200 B/s
+    rate2, _ = job._compute_eta()
+    assert 200.0 < rate2 < 1000.0    # 平滑：只移动一小步
+
+    # 持续低速 100 秒后收敛到低速附近（能跟上真实变化）
+    rate = rate2
+    done = 12_000
+    for i in range(1, 11):
+        done += 200 * 10
+        job.bytes_done = done
+        job.record_sample(20.0 + i * 10.0)
+        rate, _ = job._compute_eta()
+    assert rate <= 260.0
+
+
 def test_eta_none_without_total():
     job = _job(total=0)
     job.record_sample(0.0)
