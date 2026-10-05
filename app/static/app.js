@@ -451,22 +451,33 @@ function sftpLineHtml(sftp) {
 function renderLocalCard(v) {
   const sftp = sftpUrlFor(v.sftpPath);
   return `
-    <div class="part-row state-mounted" data-key="${esc(v.key)}">
-      <div class="part-main">
-        <div class="part-info">
-          <div class="part-name"><span class="tag fs">本地</span> ${esc(v.name)}</div>
+    <div class="disk-card">
+      <div class="disk-head">
+        <div class="disk-title">
+          <span class="disk-icon"><i class="ic ic-folder"></i></span>
+          <div>
+            <div class="disk-name">${esc(v.name)}</div>
+            <div class="disk-meta">本地存储 · 始终可读写</div>
+          </div>
         </div>
-        ${usageBarHtml(v.key)}
-        <div class="part-actions">
-          <span class="tag rw">读写模式</span>
-          <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
-            <i class="ic ic-folder-open"></i>浏览文件
-          </button>
-          <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
-            <i class="ic ic-copy"></i>复制 SFTP 路径
-          </button>
-          ${speedMeterHtml(v.key)}
-          ${sftpLineHtml(sftp)}
+      </div>
+      <div class="part-row state-mounted">
+        <div class="part-main">
+          <div class="part-info">
+            <div class="part-name"><span class="tag fs">本地</span> ${esc(v.name)}</div>
+          </div>
+          ${usageBarHtml(v.key)}
+          <div class="part-actions">
+            <span class="tag rw">读写模式</span>
+            <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
+              <i class="ic ic-folder-open"></i>浏览文件
+            </button>
+            <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
+              <i class="ic ic-copy"></i>复制 SFTP 路径
+            </button>
+            ${speedMeterHtml(v.key)}
+            ${sftpLineHtml(sftp)}
+          </div>
         </div>
       </div>
     </div>`;
@@ -481,28 +492,44 @@ function renderRemoteCard(v) {
       ? `<span class="tag busy"><i class="ic ic-loader ic-spin"></i>挂载中…</span>`
       : `<span class="tag unsupported">连接失败</span>`;
   return `
-    <div class="part-row state-${stateCls}" data-key="${esc(v.key)}">
-      <div class="part-main">
-        <div class="part-info">
-          <div class="part-name"><span class="tag fs">远程</span> ${esc(v.name)}</div>
-          <div class="part-meta">${esc(v.host)}:${esc(v.port)} · 远端路径 ${esc(v.remotePath)}</div>
+    <div class="disk-card">
+      <div class="disk-head">
+        <div class="disk-title">
+          <span class="disk-icon"><i class="ic ic-network"></i></span>
+          <div>
+            <div class="disk-name">${esc(v.name)}</div>
+            <div class="disk-meta">${esc(v.host)}:${esc(v.port)} · 远端路径 ${esc(v.remotePath)}</div>
+          </div>
         </div>
-        ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
-        <div class="part-actions">
-          ${stateTag}
-          ${v.state === "mounted" ? `
-            <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
-              <i class="ic ic-folder-open"></i>浏览文件
-            </button>
-            <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
-              <i class="ic ic-copy"></i>复制 SFTP 路径
-            </button>
-            ${speedMeterHtml(v.key)}
-            ${sftpLineHtml(sftp)}` : ""}
-          <button class="btn ${v.state === "error" ? "primary" : ""}"
+        <div class="disk-actions">
+          <button class="btn ${v.state === "error" ? "primary" : "ghost"}"
                   onclick="reconnectRemote('${esc(v.key)}')">
-            <i class="ic ic-refresh"></i>重新连接
+            <i class="ic ic-refresh"></i>${v.state === "error" ? "重新连接" : "刷新"}
           </button>
+        </div>
+      </div>
+      <div class="part-row state-${stateCls}">
+        <div class="part-main">
+          <div class="part-info">
+            <div class="part-name"><span class="tag fs">远程</span> ${esc(v.name)}</div>
+          </div>
+          ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
+          <div class="part-actions">
+            ${stateTag}
+            ${v.state === "mounted" ? `
+              <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
+                <i class="ic ic-folder-open"></i>浏览文件
+              </button>
+              <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
+                <i class="ic ic-copy"></i>复制 SFTP 路径
+              </button>
+              ${speedMeterHtml(v.key)}
+              ${sftpLineHtml(sftp)}` : ""}
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
           <button class="btn danger" onclick="deleteRemote('${esc(v.key)}')">
             <i class="ic ic-trash"></i>删除
           </button>

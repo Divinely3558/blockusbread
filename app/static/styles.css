@@ -10,44 +10,44 @@
   --primary-400: #6ee7b7;
   --primary-gradient: linear-gradient(135deg, #34d399 0%, #10b981 100%);
 
-  /* 暗色背景 */
-  --bg: #0a0e17;
-  --surface: rgba(255, 255, 255, 0.04);
-  --surface-2: rgba(255, 255, 255, 0.07);
-  --surface-3: rgba(255, 255, 255, 0.10);
+  /* 暗色背景（提高亮度） */
+  --bg: #0f1419;
+  --surface: rgba(255, 255, 255, 0.06);
+  --surface-2: rgba(255, 255, 255, 0.09);
+  --surface-3: rgba(255, 255, 255, 0.12);
 
-  /* 文字 */
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  /* 文字（提高对比度） */
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
 
   /* 边框 */
-  --border: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
-  --divider: rgba(255, 255, 255, 0.06);
-  --hover: rgba(255, 255, 255, 0.06);
+  --border: rgba(255, 255, 255, 0.10);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --divider: rgba(255, 255, 255, 0.08);
+  --hover: rgba(255, 255, 255, 0.08);
 
   /* 语义色 */
   --red: #f87171;
-  --red-bg: rgba(248, 113, 113, 0.10);
-  --red-border: rgba(248, 113, 113, 0.25);
+  --red-bg: rgba(248, 113, 113, 0.12);
+  --red-border: rgba(248, 113, 113, 0.28);
   --green: #34d399;
-  --green-bg: rgba(52, 211, 153, 0.10);
-  --green-border: rgba(52, 211, 153, 0.25);
+  --green-bg: rgba(52, 211, 153, 0.12);
+  --green-border: rgba(52, 211, 153, 0.28);
   --orange: #fb923c;
-  --orange-bg: rgba(251, 146, 60, 0.10);
-  --orange-border: rgba(251, 146, 60, 0.25);
+  --orange-bg: rgba(251, 146, 60, 0.12);
+  --orange-border: rgba(251, 146, 60, 0.28);
   --pink: #f472b6;
-  --pink-bg: rgba(244, 114, 182, 0.10);
+  --pink-bg: rgba(244, 114, 182, 0.12);
 
   /* 阴影 */
-  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.20);
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
-  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.30);
-  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.40);
-  --shadow-lift: 0 12px 36px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255,255,255,0.06);
-  --shadow-primary: 0 4px 16px rgba(52, 211, 153, 0.25);
-  --shadow-primary-hover: 0 8px 28px rgba(52, 211, 153, 0.35);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.30);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 48px rgba(0, 0, 0, 0.45);
+  --shadow-lift: 0 12px 36px rgba(0, 0, 0, 0.40), 0 0 0 1px rgba(255,255,255,0.08);
+  --shadow-primary: 0 4px 16px rgba(52, 211, 153, 0.30);
+  --shadow-primary-hover: 0 8px 28px rgba(52, 211, 153, 0.40);
 
   --radius-sm: 10px;
   --radius: 16px;
