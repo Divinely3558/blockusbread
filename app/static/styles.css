@@ -837,6 +837,8 @@ code {
 #remote-quick-url {
   border-color: var(--primary);
   background: rgba(52, 211, 153, 0.05);
+  padding: 12px 14px;
+  font-size: 14px;
 }
 #remote-quick-url:focus {
   box-shadow: 0 0 0 3.5px rgba(52, 211, 153, 0.15);
