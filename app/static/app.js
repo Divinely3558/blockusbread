@@ -1417,7 +1417,7 @@ function renderJobs() {
           ${j.status === "running" ? `<span class="job-rate">${humanRate(j.rateBps)}</span>` : ""}
           <span class="${tagCls}">${opLabel} · ${statusText}</span>
         </div>
-        <div class="job-route">${esc(shortKey(j.srcKey))}<i class="ic ic-arrow-right"></i>${esc(shortKey(j.dstKey))}${j.dstPath ? " / " + esc(j.dstPath) : ""}</div>
+        <div class="job-route" title="${esc(`${shortKey(j.srcKey)}/${j.srcPath || ""} → ${shortKey(j.dstKey)}/${j.dstPath || ""}`)}">${esc(folderName(j.srcPath, shortKey(j.srcKey)))}<i class="ic ic-arrow-right"></i>${esc(folderName(j.dstPath, shortKey(j.dstKey)))}</div>
         ${j.status === "running" || j.status === "queued" ? `
           <div class="job-track"><div class="job-fill" style="width:${pct}%"></div></div>
           <div class="job-foot">
@@ -1435,6 +1435,14 @@ function shortKey(key) {
   if (m) return m[2];
   // FC30383E5705D-p1 -> FC30…D-p1
   return key.length > 14 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
+}
+
+function folderName(path, fallback) {
+  // 取路径最后一段作为文件夹名（A→B 式路由行）；根目录（空路径）回退卷名
+  const clean = (path || "").replace(/\/+$/, "");
+  if (!clean) return fallback;
+  const i = clean.lastIndexOf("/");
+  return i === -1 ? clean : clean.slice(i + 1);
 }
 
 function openJobs(load = true) {
