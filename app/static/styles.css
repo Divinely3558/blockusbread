@@ -254,6 +254,7 @@ code {
 }
 .field input[type="text"],
 .field input[type="password"],
+.field input[type="number"],
 .cred-input,
 .field select {
   width: 100%;
@@ -271,6 +272,25 @@ code {
 }
 .field input::placeholder, .cred-input::placeholder { color: var(--text-muted); }
 .field input:focus, .cred-input:focus, .field select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3.5px rgba(52, 211, 153, 0.15);
+}
+.field textarea {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.6;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  background: var(--surface);
+  color: var(--text-primary);
+  outline: none;
+  resize: vertical;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.field textarea::placeholder { color: var(--text-muted); }
+.field textarea:focus {
   border-color: var(--primary);
   box-shadow: 0 0 0 3.5px rgba(52, 211, 153, 0.15);
 }
@@ -546,7 +566,8 @@ code {
   background: rgba(255, 255, 255, 0.03);
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: var(--radius);
-  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease,
+              transform 0.2s ease;
 }
 .part-row.state-mounted { background: rgba(255, 255, 255, 0.03); }
 .part-row.state-error {
@@ -801,6 +822,46 @@ code {
 }
 .banner-sub { margin-top: 8px; font-size: 12px; opacity: 0.75; }
 
+/* 远程存储挂载表单（弹窗内） */
+#remote-form { margin-top: 4px; }
+.remote-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+.remote-grid .field { margin-top: 0; }
+.field-narrow { max-width: 130px; }
+#remote-auth-seg { margin-top: 14px; }
+#remote-password-row, #remote-key-row { margin-top: 12px; }
+#remote-error { margin-top: 12px; }
+#remote-quick-url {
+  border-color: var(--primary);
+  background: rgba(52, 211, 153, 0.05);
+}
+#remote-quick-url:focus {
+  box-shadow: 0 0 0 3.5px rgba(52, 211, 153, 0.15);
+}
+.remote-form-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.remote-form-foot .banner-sub { margin-top: 0; }
+
+/* 本地 / 远程存储卡片列表（复用 part-row 视觉，纵向留白排列） */
+.volume-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.volume-list .part-row:hover {
+  transform: translateY(-2px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
 /* SFTP 会话面板 */
 .sessions-bar {
   margin-bottom: 20px;
@@ -993,6 +1054,11 @@ code {
   overflow: hidden;
   animation: modal-pop 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
+.modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
 @keyframes modal-pop {
   from { opacity: 0; transform: translateY(10px) scale(0.985); }
   to   { opacity: 1; transform: translateY(0) scale(1); }
@@ -1058,7 +1124,14 @@ code {
   box-shadow: 0 0 0 2px rgba(10, 14, 23, 0.8);
 }
 
-.move-body { display: flex; flex-direction: column; gap: 14px; }
+.move-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
 .move-body .field { margin: 0; }
 .move-body select {
   width: 100%;
@@ -1068,6 +1141,18 @@ code {
   background: var(--surface);
   font-size: 14px;
   color: var(--text-primary);
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2394a3b8' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  padding-right: 36px;
+  cursor: pointer;
+}
+.move-body select:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3.5px rgba(52, 211, 153, 0.15);
+  outline: none;
 }
 .move-source {
   padding: 12px 14px;
@@ -1104,10 +1189,11 @@ code {
 .move-keep input { width: 16px; height: 16px; accent-color: var(--primary); cursor: pointer; }
 .move-crumbs { margin-bottom: 8px; }
 .move-dir-list {
-  max-height: 240px;
+  max-height: 280px;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 10px;
+  flex-shrink: 0;
 }
 .move-dir-list .fs-row { padding: 7px 10px; }
 .move-dir-list .fs-row:hover { background: var(--surface-2); }
@@ -1236,7 +1322,15 @@ code {
 .modal-media .icon-btn:hover { background: rgba(255,255,255,0.08); color: #fff; }
 
 .modal-body { padding: 20px; }
-.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
 
 /* ============================================================
    文件列表
@@ -1423,6 +1517,7 @@ code {
   .brand-text { display: none; }
   .topnav { gap: 2px; }
   .topnav .btn.ghost { padding: 7px 9px; font-size: 12px; }
+  #btn-remote .jobs-label { display: none; }
   #btn-logout { padding: 7px 10px; font-size: 12px; }
   .disk-card { padding: 10px; gap: 10px; margin-bottom: 16px; }
   .disk-head { padding: 13px 14px; flex-direction: column; align-items: stretch; gap: 12px; }
@@ -1454,6 +1549,10 @@ code {
   .fs-actions { width: auto; }
   #toast-container { right: 12px; bottom: 12px; left: 12px; }
   .toast { max-width: none; }
+  .remote-grid { grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+  .remote-grid .field-narrow { max-width: none; }
+  .remote-form-foot .btn { flex: 1 1 100%; justify-content: center; }
+  .remote-form-foot .banner-sub { flex: 1 1 100%; }
 
   /* 防止长文本溢出 */
   .disk-name, .part-name, .modal-title {
@@ -1517,6 +1616,59 @@ code {
   .part-actions, .disk-actions, .fs-tools {
     flex-wrap: wrap;
   }
+
+  /* 移动弹窗移动端适配 */
+  .move-body {
+    max-height: none;
+    padding: 16px 14px;
+  }
+  .move-dir-list {
+    max-height: 40vh;
+    min-height: 120px;
+  }
+  .modal-actions {
+    position: sticky;
+    bottom: 0;
+    background: rgba(10, 14, 23, 0.95);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    margin-top: 12px;
+    padding: 12px 0 4px;
+  }
+  .modal-actions .btn {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  /* 远程挂载弹窗移动端适配 */
+  .remote-grid {
+    grid-template-columns: 1fr;
+  }
+  .remote-grid .field-narrow {
+    max-width: none;
+  }
+  #remote-quick-url {
+    font-size: 13px;
+  }
+
+  /* 弹窗内文件列表适配 */
+  .fs-list {
+    max-height: 50vh;
+  }
+  .fs-row {
+    padding: 12px 14px;
+  }
+  .fs-name {
+    font-size: 13px;
+  }
+
+  /* 顶栏按钮文字优化 */
+  .topnav .btn.ghost span {
+    font-size: 11px;
+  }
+  #btn-remote .jobs-label {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1525,5 +1677,5 @@ code {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  .disk-card:hover, .btn.primary:hover { transform: none; }
+  .disk-card:hover, .volume-list .part-row:hover, .btn.primary:hover { transform: none; }
 }

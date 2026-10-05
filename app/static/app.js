@@ -6,6 +6,8 @@ const $ = (sel) => document.querySelector(sel);
 const state = {
   username: null,
   disks: [],
+  local: [],
+  remote: [],
   rememberEnabled: false,
   share: null,
   evtSource: null,
@@ -164,7 +166,7 @@ function renderSessions(info) {
         return `<div class="session-row">
           <span class="session-verb ${f.writable ? "is-write" : "is-read"}">${verb}</span>
           <span class="session-file" title="${esc(f.path)}">${esc(name)}</span>
-          <span class="session-vol">${esc(f.volume)}</span>
+          <span class="session-vol">${esc(f.volumeName || f.volume)}</span>
         </div>`;
       }).join("");
     }
@@ -221,9 +223,86 @@ function renderShareBanner() {
       <code class="pw-mask" title="密码已隐藏，点右侧按钮可复制">${"•".repeat(Math.max(8, String(s.password).length))}</code>
       <button class="btn mini js-copy" data-copy="${esc(s.password)}" data-label="密码">复制密码</button>
     </div>
-    <div class="banner-sub">挂载后的每个卷对应 &lt;磁盘ID&gt;/part&lt;序号&gt;/fs 目录；Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，手机播放器（VLC 等）可直接添加 SFTP；密码即网页登录密码，页面不显示明文</div>`;
+    <div class="banner-sub">挂载后的每个卷对应 SFTP 子目录：外接存储 &lt;磁盘ID&gt;/part&lt;序号&gt;/fs、本地存储 local/&lt;名称&gt;、远程存储 remote/&lt;名称&gt;；Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，手机播放器（VLC 等）可直接添加 SFTP；密码即网页登录密码，页面不显示明文</div>`;
   banner.hidden = false;
 }
+
+// 顶栏「挂载远程存储」按钮：打开弹窗表单（仅 SECRET_KEY 已配置时显示，见 render()）
+$("#btn-remote").addEventListener("click", () => {
+  $("#remote-modal").hidden = false;
+  $("#remote-name").focus();
+});
+$("#remote-close").addEventListener("click", () => {
+  $("#remote-modal").hidden = true;
+});
+
+// 快速连接 URL 解析
+$("#remote-quick-url").addEventListener("input", (e) => {
+  const url = e.target.value.trim();
+  if (!url) return;
+
+  // 支持格式：sftp://user@host:port/path 或 sftp://host:port/path 或 sftp://host/path
+  const match = url.match(/^sftp:\/\/(?:(.+?)@)?([^:\/]+)(?::(\d+))?(\/.*)?$/);
+  if (!match) return;
+
+  const [, username, host, port, path] = match;
+  if (username) $("#remote-username").value = username;
+  if (host) $("#remote-host").value = host;
+  if (port) $("#remote-port").value = port;
+  if (path) $("#remote-path").value = path;
+
+  // 自动生成名称（使用主机名）
+  if (host && !$("#remote-name").value) {
+    $("#remote-name").value = host;
+  }
+});
+
+// 认证方式分段开关（密码 / SSH 私钥）
+document.addEventListener("click", (e) => {
+  const authBtn = e.target.closest("#remote-auth-seg button");
+  if (!authBtn) return;
+  document.querySelectorAll("#remote-auth-seg button").forEach((b) =>
+    b.classList.toggle("active", b === authBtn));
+  const isKey = authBtn.dataset.auth === "key";
+  $("#remote-password-row").hidden = isKey;
+  $("#remote-key-row").hidden = !isKey;
+});
+
+document.addEventListener("submit", async (e) => {
+  if (e.target.id !== "remote-form") return;
+  e.preventDefault();
+  const errBox = $("#remote-error");
+  errBox.hidden = true;
+  const authMode = document.querySelector("#remote-auth-seg button.active")?.dataset.auth || "password";
+  const body = {
+    name: $("#remote-name").value.trim(),
+    host: $("#remote-host").value.trim(),
+    port: parseInt($("#remote-port").value, 10) || 22,
+    username: $("#remote-username").value.trim(),
+    remotePath: $("#remote-path").value.trim() || "/",
+    authMode,
+  };
+  if (authMode === "key") body.privateKey = $("#remote-key").value;
+  else body.password = $("#remote-password").value;
+  const btn = e.target.querySelector('button[type="submit"]');
+  btn.disabled = true;
+  try {
+    await api("POST", "/api/remote-stores", body);
+    $("#remote-modal").hidden = true;
+    $("#remote-form").reset();
+    $("#remote-password-row").hidden = false;
+    $("#remote-key-row").hidden = true;
+    $("#remote-password").value = "";
+    $("#remote-key").value = "";
+    toast("远程存储已添加，正在挂载…", "ok");
+    await refreshDisks();
+  } catch (err) {
+    errBox.textContent = err.message;
+    errBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 // 所有复制按钮统一走 data 属性（避免内联 onclick 中引号截断，兼容含特殊字符的密码/路径）
 document.addEventListener("click", (e) => {
@@ -306,12 +385,14 @@ function closeEvents() {
 
 async function refreshDisks() {
   try {
-    const snap = await api("GET", "/api/disks");
+    const snap = await api("GET", "/api/volumes");
     // 数据无变化不重绘：避免卡片闪烁，也避免清空用户正在输入的解锁密码
     const sig = JSON.stringify(snap);
     if (sig === state.lastSig) return;
     state.lastSig = sig;
     state.disks = snap.disks || [];
+    state.local = snap.local || [];
+    state.remote = snap.remote || [];
     state.rememberEnabled = !!snap.rememberEnabled;
     render();
   } catch {
@@ -328,18 +409,108 @@ $("#btn-refresh").addEventListener("click", async () => {
 // ------------------------------------------------------------ 渲染
 
 function render() {
-  const list = $("#disk-list");
-  if (!state.disks.length) {
-    list.innerHTML = `
-      <div class="empty">
-        <div class="big"><i class="ic ic-empty"></i></div>
-        <div>未检测到 USB 硬盘</div>
-        <div style="margin-top:6px;font-size:12px">插入 BitLocker 或普通外接硬盘后，列表会自动出现</div>
-      </div>`;
-    return;
+  const hasLocal = state.local.length > 0;
+  const hasDisks = state.disks.length > 0;
+  const hasRemote = state.remote.length > 0;
+  $("#sec-local").hidden = !hasLocal;
+  $("#sec-disks").hidden = !hasDisks;
+  $("#sec-remote").hidden = !hasRemote;
+  $("#storage-empty").hidden = hasLocal || hasDisks || hasRemote;
+  // 顶栏「挂载远程存储」入口：SECRET_KEY 未配置时隐藏（凭据无法加密保存）
+  $("#btn-remote").hidden = !state.rememberEnabled;
+  if (hasLocal) $("#local-list").innerHTML = state.local.map(renderLocalCard).join("");
+  if (hasDisks) {
+    $("#disk-list").innerHTML = state.disks.map(renderDisk).join("");
+    loadMissingSmart();
   }
-  list.innerHTML = state.disks.map(renderDisk).join("");
-  loadMissingSmart();
+  if (hasRemote) $("#remote-list").innerHTML = state.remote.map(renderRemoteCard).join("");
+}
+
+// 容量条 / 速率计 / SFTP 路径行：本地、远程与外接共用同一套视觉
+function usageBarHtml(key) {
+  return `
+    <span class="usage-bar" data-usage-key="${esc(key)}" title="存储容量与剩余空间">
+      <span class="usage-track"><span class="usage-fill" style="width:0%"></span></span>
+      <span class="usage-meta"><span class="usage-pct">—</span><span class="usage-detail">—</span></span>
+    </span>`;
+}
+
+function speedMeterHtml(key) {
+  return `
+    <span class="speed-meter idle" data-speed-key="${esc(key)}"
+          title="实时传输速度：下载（存储至客户端）/ 上传（客户端至存储）">
+      <span class="speed speed-rx"><i class="ic ic-arrow-down"></i><span class="speed-val">0 B/s</span></span>
+      <span class="speed speed-tx"><i class="ic ic-arrow-up"></i><span class="speed-val">0 B/s</span></span>
+    </span>`;
+}
+
+function sftpLineHtml(sftp) {
+  return `<div class="sftp-line"><i class="ic ic-folder"></i><code>${esc(sftp)}</code></div>`;
+}
+
+function renderLocalCard(v) {
+  const sftp = sftpUrlFor(v.sftpPath);
+  return `
+    <div class="part-row state-mounted" data-key="${esc(v.key)}">
+      <div class="part-main">
+        <div class="part-info">
+          <div class="part-name"><span class="tag fs">本地</span> ${esc(v.name)}</div>
+        </div>
+        ${usageBarHtml(v.key)}
+        <div class="part-actions">
+          <span class="tag rw">读写模式</span>
+          <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
+            <i class="ic ic-folder-open"></i>浏览文件
+          </button>
+          <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
+            <i class="ic ic-copy"></i>复制 SFTP 路径
+          </button>
+          ${speedMeterHtml(v.key)}
+          ${sftpLineHtml(sftp)}
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderRemoteCard(v) {
+  const sftp = sftpUrlFor(v.sftpPath);
+  const stateCls = v.state === "error" ? "error" : v.state === "mounting" ? "mounting" : "mounted";
+  const stateTag = v.state === "mounted"
+    ? `<span class="tag rw">读写模式</span>`
+    : v.state === "mounting"
+      ? `<span class="tag busy"><i class="ic ic-loader ic-spin"></i>挂载中…</span>`
+      : `<span class="tag unsupported">连接失败</span>`;
+  return `
+    <div class="part-row state-${stateCls}" data-key="${esc(v.key)}">
+      <div class="part-main">
+        <div class="part-info">
+          <div class="part-name"><span class="tag fs">远程</span> ${esc(v.name)}</div>
+          <div class="part-meta">${esc(v.host)}:${esc(v.port)} · 远端路径 ${esc(v.remotePath)}</div>
+        </div>
+        ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
+        <div class="part-actions">
+          ${stateTag}
+          ${v.state === "mounted" ? `
+            <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
+              <i class="ic ic-folder-open"></i>浏览文件
+            </button>
+            <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
+              <i class="ic ic-copy"></i>复制 SFTP 路径
+            </button>
+            ${speedMeterHtml(v.key)}
+            ${sftpLineHtml(sftp)}` : ""}
+          <button class="btn ${v.state === "error" ? "primary" : ""}"
+                  onclick="reconnectRemote('${esc(v.key)}')">
+            <i class="ic ic-refresh"></i>重新连接
+          </button>
+          <button class="btn danger" onclick="deleteRemote('${esc(v.key)}')">
+            <i class="ic ic-trash"></i>删除
+          </button>
+        </div>
+      </div>
+      ${v.state === "error" && v.error
+        ? `<div class="part-error"><i class="ic ic-alert"></i><span>${esc(v.error)}</span></div>` : ""}
+    </div>`;
 }
 
 function renderDisk(disk) {
@@ -539,13 +710,16 @@ function renderActionPanel(p) {
     </div>`;
 }
 
-function sftpUrl(p) {
-  const sub = `${p.diskId}/part${p.number}/fs`;
+function sftpUrlFor(sub) {
   const s = state.share;
   const host = s ? s.host : location.hostname;
   const port = s ? s.port : 2222;
   const auth = s && s.username ? `${s.username}@` : "";
   return `sftp://${auth}${host}:${port}/${sub}`;
+}
+
+function sftpUrl(p) {
+  return sftpUrlFor(`${p.diskId}/part${p.number}/fs`);
 }
 
 // ------------------------------------------------------------ 操作
@@ -631,6 +805,27 @@ async function forgetCredential(key) {
   }
 }
 
+async function reconnectRemote(key) {
+  try {
+    await api("POST", `/api/remote-stores/${encodeURIComponent(key)}/reconnect`);
+    toast("正在重新连接…", "busy");
+  } catch (err) {
+    toast(err.message, "err");
+  }
+  refreshDisks();
+}
+
+async function deleteRemote(key) {
+  if (!window.confirm("确认删除该远程存储？仅删除挂载配置，不会删除远端文件。")) return;
+  try {
+    await api("DELETE", `/api/remote-stores/${encodeURIComponent(key)}`);
+    toast("已删除远程存储", "ok");
+    refreshDisks();
+  } catch (err) {
+    toast(err.message, "err");
+  }
+}
+
 // ------------------------------------------------------------ 网页文件浏览
 
 const fsState = {
@@ -674,7 +869,15 @@ function encPath(p) { return encodeURIComponent(p || ""); }
 function rawUrl(key, path, download) {
   return `/api/volumes/${encodeURIComponent(key)}/raw?path=${encPath(path)}${download ? "&download=1" : ""}`;
 }
-function findPartition(key) {
+function findVolume(key) {
+  if (key.startsWith("local:")) {
+    const v = (state.local || []).find((x) => x.key === key);
+    return v ? { name: v.name } : null;
+  }
+  if (key.startsWith("remote:")) {
+    const v = (state.remote || []).find((x) => x.key === key);
+    return v ? { name: v.name } : null;
+  }
   for (const d of state.disks) {
     const p = d.partitions.find((x) => x.key === key);
     if (p) return { disk: d, part: p };
@@ -682,11 +885,20 @@ function findPartition(key) {
   return null;
 }
 
+function volumeDisplayName(key) {
+  const found = findVolume(key);
+  if (!found) return key;
+  if (found.part) {
+    return found.part.label || `${found.disk.displayName} · 分区 ${found.part.number}`;
+  }
+  return found.name || key;
+}
+
 async function openBrowser(key) {
-  const found = findPartition(key);
+  const found = findVolume(key);
   if (!found) { toast("卷不可用", "err"); return; }
   fsState.key = key;
-  fsState.label = found.part.label || `${found.disk.displayName} · 分区 ${found.part.number}`;
+  fsState.label = volumeDisplayName(key);
   $("#fs-title").textContent = fsState.label;
   $("#fs-modal").hidden = false;
   await loadFsDir("");
@@ -736,11 +948,11 @@ function renderFs() {
       <span class="fs-name" title="${esc(e.name)}">${esc(e.name)}</span>`;
     let actions;
     if (e.isDir) {
-      actions = (writableVolumes().length ? transferAction(full, e.name) : "")
+      actions = (writableTargets().length ? transferAction(full, e.name) : "")
         + (fsState.writable ? fsWriteActions(full, e.name, true) : "");
     } else {
       actions = `<button class="btn mini" title="下载" data-act="download" data-path="${esc(full)}"><i class="ic ic-download"></i></button>`
-        + (writableVolumes().length ? transferAction(full, e.name) : "")
+        + (writableTargets().length ? transferAction(full, e.name) : "")
         + (fsState.writable ? fsWriteActions(full, e.name, false) : "");
     }
     const meta = e.isDir ? "文件夹" : `${humanSize(e.size)} · ${humanDate(e.mtime)}`;
@@ -767,14 +979,22 @@ function transferAction(full, name) {
     </button>`;
 }
 
-// 当前以读写模式挂载的卷（可作为移动目标）
-function writableVolumes() {
+// 当前可作为移动 / 复制目标的卷（本地、远程恒可写；外接需以读写模式挂载）
+function writableTargets() {
   const out = [];
+  for (const v of state.local || []) {
+    out.push({ key: v.key, label: v.name, group: "本地存储" });
+  }
   for (const d of state.disks || []) {
     for (const p of d.partitions || []) {
       if (p.state === "mounted" && p.mode === "rw") {
-        out.push({ disk: d, part: p });
+        out.push({ key: p.key, label: volumeLabel(p, d), group: "外接存储" });
       }
+    }
+  }
+  for (const v of state.remote || []) {
+    if (v.state === "mounted") {
+      out.push({ key: v.key, label: v.name, group: "远程存储" });
     }
   }
   return out;
@@ -907,16 +1127,17 @@ function volumeLabel(part, disk) {
 }
 
 async function openMove(path, name, wantOp = "move") {
-  const targets = writableVolumes();
+  const targets = writableTargets();
   if (!targets.length) {
-    toast("没有以读写模式挂载的硬盘作为目标，请先用读写模式解锁目标硬盘", "err");
+    toast("没有可写的存储作为目标（本地 / 远程恒可写，外接需以读写模式挂载）", "err");
     return;
   }
-  const src = findPartition(fsState.key);
+  const src = findVolume(fsState.key);
   moveState.srcKey = fsState.key;
   moveState.srcPath = path;
   moveState.srcName = name;
-  moveState.srcWritable = src && src.part.mode === "rw";
+  // 外接卷看挂载模式；本地 / 远程恒可写
+  moveState.srcWritable = src ? (!src.part || src.part.mode === "rw") : false;
   // 只读源强制复制；读写源默认移动，用户可在弹窗勾选改为复制
   moveState.op = moveState.srcWritable ? wantOp : "copy";
 
@@ -935,13 +1156,21 @@ async function openMove(path, name, wantOp = "move") {
   $("#move-keep").checked = moveState.op === "copy";
   updateMoveModeUI();
 
+  // 按 本地 / 外接 / 远程 分组渲染下拉选项
+  const groups = [];
+  for (const t of targets) {
+    let g = groups.find((x) => x.title === t.group);
+    if (!g) { g = { title: t.group, items: [] }; groups.push(g); }
+    g.items.push(t);
+  }
   const sel = $("#move-disk-select");
-  sel.innerHTML = targets.map(({ disk, part }) =>
-    `<option value="${esc(part.key)}">${esc(volumeLabel(part, disk))}</option>`).join("");
-  // 默认选另一个盘（跨盘移动是主要场景）
-  const other = targets.find((t) => t.part.key !== fsState.key) || targets[0];
-  sel.value = other.part.key;
-  moveState.destKey = other.part.key;
+  sel.innerHTML = groups.map((g) =>
+    `<optgroup label="${esc(g.title)}">${g.items.map((t) =>
+      `<option value="${esc(t.key)}">${esc(t.label)}</option>`).join("")}</optgroup>`).join("");
+  // 默认选另一个存储（跨存储移动是主要场景）
+  const other = targets.find((t) => t.key !== fsState.key) || targets[0];
+  sel.value = other.key;
+  moveState.destKey = other.key;
 
   $("#move-confirm").disabled = false;
   $("#move-modal").hidden = false;
@@ -1054,6 +1283,18 @@ async function loadJobs() {
   } catch { /* 未登录等场景忽略 */ }
 }
 
+function fmtEta(sec) {
+  if (sec < 60) return `${sec} 秒`;
+  if (sec < 3600) {
+    const m = Math.floor(sec / 60);
+    const s = sec % 60;
+    return s ? `${m} 分 ${s} 秒` : `${m} 分`;
+  }
+  const h = Math.floor(sec / 3600);
+  const m = Math.round((sec % 3600) / 60);
+  return m ? `${h} 小时 ${m} 分` : `${h} 小时`;
+}
+
 function renderJobs() {
   const active = jobsState.jobs.filter((j) => j.status === "queued" || j.status === "running");
   const badge = $("#jobs-badge");
@@ -1084,9 +1325,16 @@ function renderJobs() {
     const [statusText, tagCls] = statusMap[j.status] || [j.status, "tag"];
     const opLabel = j.op === "copy" ? "复制" : "移动";
     const canCancel = j.status === "queued" || j.status === "running";
-    const progress = j.status === "running" && j.bytesTotal
-      ? `${pct}% · ${humanSize(j.bytesDone)} / ${humanSize(j.bytesTotal)} · ${j.filesDone}/${j.filesTotal} 文件`
-      : (j.status === "queued" ? "等待开始…" : "");
+    let progress = "";
+    if (j.status === "running") {
+      progress = j.bytesTotal
+        ? `${pct}% · ${humanSize(j.bytesDone)} / ${humanSize(j.bytesTotal)} · ${j.filesDone}/${j.filesTotal} 文件`
+        : `${humanSize(j.bytesDone)} · ${j.filesDone}/${j.filesTotal} 文件`;
+      // 预计剩余时间：速率不足以估算（<1KB/s）时提示计算中
+      progress += j.etaSeconds != null
+        ? ` · 剩余约 ${fmtEta(j.etaSeconds)}`
+        : " · 剩余时间计算中…";
+    }
     return `
       <div class="job-item job-${j.status}">
         <div class="job-head">
@@ -1097,7 +1345,7 @@ function renderJobs() {
         ${j.status === "running" || j.status === "queued" ? `
           <div class="job-track"><div class="job-fill" style="width:${pct}%"></div></div>
           <div class="job-foot">
-            <span class="job-progress">${esc(progress || " ")}${j.current ? ` · ${esc(j.current)}` : ""}</span>
+            <span class="job-progress">${esc(progress || " ")}${j.current ? ` · ${esc(j.current)}` : ""}</span>
             ${canCancel ? `<button class="btn mini danger" data-job-cancel="${esc(j.id)}">取消</button>` : ""}
           </div>` : ""}
         ${j.error ? `<div class="job-error"><i class="ic ic-alert"></i>${esc(j.error)}</div>` : ""}
@@ -1106,7 +1354,10 @@ function renderJobs() {
 }
 
 function shortKey(key) {
-  // FC30383E5705D-p1 -> FC30…D-p1，避免路由行过长
+  // local:<名> / remote:<名> 直接取名称；外接 key 截断避免路由行过长
+  const m = key.match(/^(local|remote):(.+)$/);
+  if (m) return m[2];
+  // FC30383E5705D-p1 -> FC30…D-p1
   return key.length > 14 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
 }
 

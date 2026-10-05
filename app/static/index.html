@@ -50,6 +50,9 @@
           <i class="ic ic-move"></i><span class="jobs-label">传输</span>
           <span id="jobs-badge" class="jobs-badge" hidden>0</span>
         </button>
+        <button class="btn ghost" id="btn-remote" title="挂载远程 SFTP 存储" hidden>
+          <i class="ic ic-network"></i><span class="jobs-label">挂载远程存储</span>
+        </button>
         <button class="btn ghost" id="btn-refresh" title="重新扫描设备"><i class="ic ic-refresh"></i>刷新设备</button>
         <button class="btn danger" id="btn-logout">退出</button>
       </nav>
@@ -66,17 +69,90 @@
       </button>
       <div id="sessions-detail" class="sessions-detail" hidden></div>
     </div>
-    <div class="page-head">
-      <h2>外接存储</h2>
-      <p>插入 USB 硬盘后自动识别；BitLocker 卷解锁后通过 SFTP 访问</p>
+
+    <section id="sec-local" hidden>
+      <div class="page-head">
+        <h2>本地存储</h2>
+        <p>宿主机映射的文件夹，始终可读写</p>
+      </div>
+      <div id="local-list" class="volume-list"></div>
+    </section>
+
+    <section id="sec-disks" hidden>
+      <div class="page-head">
+        <h2>外接存储</h2>
+        <p>插入 USB 硬盘后自动识别；BitLocker 卷解锁后通过 SFTP 访问</p>
+      </div>
+      <div id="disk-list"></div>
+    </section>
+
+    <section id="sec-remote" hidden>
+      <div class="page-head">
+        <h2>远程存储</h2>
+        <p>通过 SFTP 挂载的远程硬盘</p>
+      </div>
+      <div id="remote-list" class="volume-list"></div>
+    </section>
+
+    <div id="storage-empty" class="empty" hidden>
+      <div class="big"><i class="ic ic-empty"></i></div>
+      <div>暂无存储</div>
+      <div style="margin-top:6px;font-size:12px">请插入 USB 硬盘，或在上方 SFTP 面板添加远程存储</div>
     </div>
-    <div id="disk-list"></div>
   </main>
 </div>
 
 <div id="toast-container"></div>
 
 <!-- 文件浏览弹窗 -->
+<div id="remote-modal" class="modal-mask" hidden>
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-title">
+        <i class="ic ic-network"></i>
+        <span>挂载远程 SFTP 存储</span>
+      </div>
+      <button class="btn icon-btn" id="remote-close" title="关闭"><i class="ic ic-close"></i></button>
+    </div>
+    <form id="remote-form">
+      <div class="field">
+        <span>快速连接（可选）</span>
+        <input id="remote-quick-url" type="text" autocomplete="off"
+               placeholder="sftp://user@host:port/path 或 sftp://host:port/path">
+        <span style="font-size:11.5px;color:var(--text-muted);margin-top:4px;display:block">粘贴完整地址后自动填充下方字段，只需输入密码即可连接</span>
+      </div>
+      <div class="remote-grid">
+        <label class="field"><span>名称</span>
+          <input id="remote-name" type="text" maxlength="64" placeholder="如：NAS 影视库" required></label>
+        <label class="field"><span>主机</span>
+          <input id="remote-host" type="text" placeholder="IP 或域名" required></label>
+        <label class="field field-narrow"><span>端口</span>
+          <input id="remote-port" type="number" min="1" max="65535" value="22" required></label>
+        <label class="field"><span>用户名</span>
+          <input id="remote-username" type="text" autocomplete="off" required></label>
+        <label class="field"><span>远端路径</span>
+          <input id="remote-path" type="text" value="/" placeholder="/volume1/media"></label>
+      </div>
+      <div class="seg" id="remote-auth-seg" role="tablist">
+        <button type="button" class="active" data-auth="password">密码认证</button>
+        <button type="button" data-auth="key">SSH 私钥</button>
+      </div>
+      <div class="field" id="remote-password-row">
+        <input id="remote-password" type="password" autocomplete="new-password" placeholder="SSH 登录密码">
+      </div>
+      <div class="field" id="remote-key-row" hidden>
+        <textarea id="remote-key" rows="4"
+                  placeholder="粘贴 OpenSSH 私钥（-----BEGIN OPENSSH PRIVATE KEY-----）"></textarea>
+      </div>
+      <div class="wrong" id="remote-error" hidden></div>
+      <div class="remote-form-foot">
+        <button type="submit" class="btn primary"><i class="ic ic-network"></i>连接并挂载</button>
+        <span class="banner-sub">凭据将使用 SECRET_KEY 加密保存到容器数据目录，重启后自动重连</span>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div id="fs-modal" class="modal-mask" hidden>
   <div class="modal modal-lg">
     <div class="modal-head">
