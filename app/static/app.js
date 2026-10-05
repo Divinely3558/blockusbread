@@ -506,6 +506,9 @@ function renderRemoteCard(v) {
                   onclick="reconnectRemote('${esc(v.key)}')">
             <i class="ic ic-refresh"></i>${v.state === "error" ? "重新连接" : "刷新"}
           </button>
+          <button class="btn danger" onclick="deleteRemote('${esc(v.key)}')">
+            <i class="ic ic-trash"></i>删除
+          </button>
         </div>
       </div>
       <div class="part-row state-${stateCls}">
@@ -526,13 +529,6 @@ function renderRemoteCard(v) {
               ${speedMeterHtml(v.key)}
               ${sftpLineHtml(sftp)}` : ""}
           </div>
-        </div>
-      </div>
-    </div>`;
-}
-          <button class="btn danger" onclick="deleteRemote('${esc(v.key)}')">
-            <i class="ic ic-trash"></i>删除
-          </button>
         </div>
       </div>
       ${v.state === "error" && v.error
