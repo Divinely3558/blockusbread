@@ -13,6 +13,9 @@ wheels/
 .env
 *.env
 
+# 本机私有 compose 配置（真实本地存储路径等，禁止入库）
+docker-compose.override.yml
+
 # 含硬编码凭据的本地脚本，禁止入库
 ghcr_cleanup.py
 

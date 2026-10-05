@@ -11,7 +11,7 @@
   --primary-gradient: linear-gradient(135deg, #34d399 0%, #10b981 100%);
 
   /* 暗色背景（提高亮度） */
-  --bg: #0f1419;
+  --bg: #1c2836;
   --surface: rgba(255, 255, 255, 0.06);
   --surface-2: rgba(255, 255, 255, 0.09);
   --surface-3: rgba(255, 255, 255, 0.12);
@@ -78,38 +78,37 @@ body::before {
   position: fixed;
   inset: 0;
   background:
-    radial-gradient(900px 500px at 15% 10%, rgba(52, 211, 153, 0.08), transparent 60%),
-    radial-gradient(700px 400px at 85% 20%, rgba(99, 102, 241, 0.06), transparent 55%),
-    radial-gradient(600px 350px at 50% 80%, rgba(168, 85, 247, 0.05), transparent 50%),
-    radial-gradient(500px 300px at 90% 90%, rgba(52, 211, 153, 0.04), transparent 50%);
+    radial-gradient(900px 500px at 15% 10%, rgba(52, 211, 153, 0.12), transparent 60%),
+    radial-gradient(700px 400px at 85% 20%, rgba(99, 102, 241, 0.10), transparent 55%),
+    radial-gradient(600px 350px at 50% 80%, rgba(168, 85, 247, 0.08), transparent 50%),
+    radial-gradient(500px 300px at 90% 90%, rgba(52, 211, 153, 0.07), transparent 50%);
   pointer-events: none;
   z-index: 0;
 }
 
-/* 浮动环境光斑 */
+/* 浮动环境光斑（纯径向渐变自发光，不用 filter:blur，避免大面积模糊纹理） */
 .ambient-orb {
   position: fixed;
   border-radius: 50%;
-  filter: blur(80px);
   pointer-events: none;
   z-index: 0;
   animation: orb-float 20s ease-in-out infinite alternate;
 }
 .ambient-orb-1 {
-  width: 500px; height: 500px;
-  background: rgba(52, 211, 153, 0.07);
-  top: -100px; left: -100px;
+  width: 520px; height: 520px;
+  background: radial-gradient(closest-side, rgba(52, 211, 153, 0.14), rgba(52, 211, 153, 0.05) 45%, transparent 72%);
+  top: -120px; left: -120px;
   animation-delay: 0s;
 }
 .ambient-orb-2 {
-  width: 400px; height: 400px;
-  background: rgba(99, 102, 241, 0.06);
-  bottom: -80px; right: -80px;
+  width: 420px; height: 420px;
+  background: radial-gradient(closest-side, rgba(99, 102, 241, 0.12), rgba(99, 102, 241, 0.04) 45%, transparent 72%);
+  bottom: -100px; right: -100px;
   animation-delay: -7s;
 }
 .ambient-orb-3 {
-  width: 300px; height: 300px;
-  background: rgba(168, 85, 247, 0.05);
+  width: 320px; height: 320px;
+  background: radial-gradient(closest-side, rgba(168, 85, 247, 0.10), rgba(168, 85, 247, 0.035) 45%, transparent 72%);
   top: 40%; left: 60%;
   animation-delay: -13s;
 }
@@ -156,6 +155,9 @@ code {
 .ic-lock    { -webkit-mask-image: url(/static/icons/icon-lock.svg);    mask-image: url(/static/icons/icon-lock.svg); }
 .ic-unlock  { -webkit-mask-image: url(/static/icons/icon-unlock.svg);  mask-image: url(/static/icons/icon-unlock.svg); }
 .ic-network { -webkit-mask-image: url(/static/icons/icon-network.svg); mask-image: url(/static/icons/icon-network.svg); }
+.ic-local    { -webkit-mask-image: url(/static/icons/icon-local.svg);    mask-image: url(/static/icons/icon-local.svg); }
+.ic-remote   { -webkit-mask-image: url(/static/icons/icon-remote.svg);   mask-image: url(/static/icons/icon-remote.svg); }
+.ic-external { -webkit-mask-image: url(/static/icons/icon-external.svg); mask-image: url(/static/icons/icon-external.svg); }
 .ic-empty   { -webkit-mask-image: url(/static/icons/icon-empty.svg);   mask-image: url(/static/icons/icon-empty.svg); }
 .ic-alert   { -webkit-mask-image: url(/static/icons/icon-alert.svg);   mask-image: url(/static/icons/icon-alert.svg); }
 .ic-check   { -webkit-mask-image: url(/static/icons/icon-check.svg);   mask-image: url(/static/icons/icon-check.svg); }
@@ -191,8 +193,6 @@ code {
   gap: 6px;
   border: 1px solid var(--border-strong);
   background: var(--surface);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   color: var(--text-primary);
   padding: 8px 14px;
   border-radius: var(--radius-sm);
@@ -264,8 +264,6 @@ code {
   font-size: 14px;
   font-family: inherit;
   background: var(--surface);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
   color: var(--text-primary);
   outline: none;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
@@ -357,8 +355,9 @@ code {
 }
 
 @keyframes card-pop {
-  from { opacity: 0; transform: translateY(18px) scale(0.97); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+  /* 不用 scale：缩放入场会让含模糊层的元素按低分辨率栅格化，结束后偶发发虚 */
+  from { opacity: 0; transform: translateY(18px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
 .login-brand { text-align: center; margin-bottom: 22px; }
@@ -450,9 +449,8 @@ code {
    ============================================================ */
 
 .disk-card {
-  background: rgba(255, 255, 255, 0.06);
-  backdrop-filter: blur(16px) saturate(1.1);
-  -webkit-backdrop-filter: blur(16px) saturate(1.1);
+  /* 不用 backdrop-filter：大面积实时背景模糊是间歇性发虚的主要来源 */
+  background: linear-gradient(165deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.04));
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: var(--radius-lg);
   padding: 14px;
@@ -730,6 +728,21 @@ code {
   font-size: 12px;
   word-break: break-all;
 }
+/* sftp 行前的文件夹图标即复制按钮：点击复制路径 */
+.sftp-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 3px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--primary);
+  transition: background 0.15s ease, transform 0.15s ease;
+}
+.sftp-copy:hover { background: var(--surface-2); transform: translateY(-1px); }
+.sftp-copy:active { transform: translateY(0); }
 
 /* 卷容量条 */
 .usage-bar {
@@ -824,7 +837,14 @@ code {
 .banner-sub { margin-top: 8px; font-size: 12px; opacity: 0.75; }
 
 /* 远程存储挂载表单（弹窗内） */
-#remote-form { margin-top: 4px; }
+#remote-modal .modal { width: min(640px, 94vw); }
+#remote-form {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 4px 20px 20px;
+  overflow-y: auto;
+}
+.remote-grid label.field.remote-path-field { grid-column: 1 / -1; }
 .remote-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -961,8 +981,6 @@ code {
 /* 空状态 */
 .empty {
   background: var(--surface);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   border: 1.5px dashed var(--border-strong);
   border-radius: var(--radius-lg);
   padding: 60px 20px;
@@ -1002,8 +1020,6 @@ code {
   align-items: center;
   gap: 8px;
   background: rgba(30, 41, 59, 0.92);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
   color: #fff;
   padding: 11px 17px;
   border-radius: 12px;
@@ -1063,8 +1079,8 @@ code {
   flex: 1 1 auto;
 }
 @keyframes modal-pop {
-  from { opacity: 0; transform: translateY(10px) scale(0.985); }
-  to   { opacity: 1; transform: translateY(0) scale(1); }
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 .modal-lg { width: 880px; height: min(82vh, 760px); }
 .modal-media { width: auto; max-width: 94vw; background: rgba(11, 18, 32, 0.95); }
@@ -1549,6 +1565,7 @@ code {
     border-radius: 0;
     border: none;
   }
+  #remote-modal .modal { width: 100%; max-width: 100%; }
   .fs-actions { width: auto; }
   #toast-container { right: 12px; bottom: 12px; left: 12px; }
   .toast { max-width: none; }
@@ -1632,9 +1649,7 @@ code {
   .modal-actions {
     position: sticky;
     bottom: 0;
-    background: rgba(10, 14, 23, 0.95);
-    backdrop-filter: blur(12px);
-    -webkit-backdrop-filter: blur(12px);
+    background: rgba(18, 28, 42, 0.98);
     margin-top: 12px;
     padding: 12px 0 4px;
   }
@@ -1680,5 +1695,5 @@ code {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
-  .disk-card:hover, .volume-list .part-row:hover, .btn.primary:hover { transform: none; }
+  .disk-card:hover, .volume-list .part-row:hover, .btn.primary:hover, .sftp-copy:hover { transform: none; }
 }

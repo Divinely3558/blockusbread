@@ -19,6 +19,9 @@ from app.mounts.manager import MountManager
 from app.mounts.stats import SpeedMonitor
 from app.secrets_store import SecretsStore
 from app.sftp.manager import SftpManager
+from app.stores.local import LocalStoreManager
+from app.stores.registry import StoreRegistry
+from app.stores.remote import RemoteStoreManager
 from app.transfers.api import router as transfers_router
 from app.transfers.jobs import TransferManager
 from app.web.api import router as api_router
@@ -51,9 +54,19 @@ async def lifespan(app: FastAPI):
     sessions = SessionStore(settings.session_signing_key)
     login_limiter = LoginRateLimiter()
     manager = MountManager(bus=bus, secrets=secrets)
-    speeds = SpeedMonitor(manager)
+    local_stores = LocalStoreManager()
+    remote_stores = RemoteStoreManager(
+        bus=bus,
+        fernet_key=settings.fernet_key if settings.remember_enabled else None,
+    )
+    registry = StoreRegistry(manager=manager, local=local_stores, remote=remote_stores)
+    speeds = SpeedMonitor(registry)
     sftp = SftpManager(settings)
     transfers = TransferManager(bus=bus)
+
+    # 本地/远程存储挂载根目录（Dockerfile 已有兜底）
+    local_stores.ensure_root()
+    remote_stores.ensure_dirs()
 
     # SFTP 服务先行（挂载卷通过它对外共享）
     await sftp.start()
@@ -64,6 +77,8 @@ async def lifespan(app: FastAPI):
     app.state.sessions = sessions
     app.state.login_limiter = login_limiter
     app.state.manager = manager
+    app.state.registry = registry
+    app.state.remote = remote_stores
     app.state.sftp = sftp
     app.state.speeds = speeds
     app.state.transfers = transfers
@@ -73,10 +88,14 @@ async def lifespan(app: FastAPI):
     await speeds.start()
 
     # 清理上次异常退出可能残留的挂载与 cryptsetup 映射设备
+    # （/mnt/usb/local 与 /mnt/usb/remote 子树由 Docker / 远程管理器负责，不清理）
     await manager.cleanup_orphans()
 
     # 启动前先做一次全量扫描与状态重建（含已记住凭据卷的自动解锁）
     await manager.rescan("startup")
+
+    # 远程存储：按保存的配置自动重连 + 健康探测
+    await remote_stores.start()
 
     # uevent 监听线程 -> 调度到事件循环
     loop = asyncio.get_running_loop()
@@ -98,10 +117,13 @@ async def lifespan(app: FastAPI):
         periodic.cancel()
         monitor.stop()
         monitor.join(timeout=3)
+        await remote_stores.stop()
+        await remote_stores.unmount_all()
         await manager.unmount_all()
         await speeds.stop()
         if secrets is not None:
             secrets.close()
+        remote_stores.close()
         await sftp.stop()
         log.info("已退出")
 

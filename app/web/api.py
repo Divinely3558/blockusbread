@@ -15,6 +15,11 @@ from app.devices.smart import query_smart
 from app.mounts.commands import MountError
 from app.mounts.manager import VolumeNotFound
 from app.sftp.manager import InvalidCredentials
+from app.stores.remote import (
+    RemoteStoreError,
+    RemoteStoreExists,
+    RemoteStoreNotFound,
+)
 from app.web.ratelimit import client_ip
 from app.web.sessions import COOKIE_MAX_AGE, COOKIE_NAME
 
@@ -30,6 +35,14 @@ def get_sessions(request: Request):
 
 def get_manager(request: Request):
     return request.app.state.manager
+
+
+def get_registry(request: Request):
+    return request.app.state.registry
+
+
+def get_remote(request: Request):
+    return request.app.state.remote
 
 
 def get_sftp(request: Request):
@@ -60,6 +73,17 @@ class UnlockBody(BaseModel):
 
 class MountBody(BaseModel):
     writable: bool = False
+
+
+class RemoteStoreBody(BaseModel):
+    group: str = Field(default="", max_length=64)   # 远程组名，留空默认取用户名
+    host: str = Field(min_length=1, max_length=255)
+    port: int = Field(default=22, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=128)
+    remotePath: str = Field(default="/", max_length=1024)
+    authMode: str = Field(pattern="^(password|key)$")
+    password: str = Field(default="", max_length=2048)
+    privateKey: str = Field(default="", max_length=65536)
 
 
 # ---------------------------------------------------------------- 认证
@@ -132,12 +156,19 @@ async def share_info(request: Request, _: dict = Depends(current_session)):
     }
 
 
-# ---------------------------------------------------------------- 设备/卷
+# ---------------------------------------------------------------- 存储卷
 
 
-@router.get("/disks")
-async def list_disks(request: Request, _: dict = Depends(current_session)):
-    return get_manager(request).snapshot()
+def _require_external_key(key: str) -> None:
+    """解锁/挂载/弹出/凭据/SMART 等操作仅服务外接卷。"""
+    if key.startswith(("local:", "remote:")):
+        raise HTTPException(status_code=400, detail="该存储不支持此操作")
+
+
+@router.get("/volumes")
+async def list_volumes(request: Request, _: dict = Depends(current_session)):
+    """三类存储快照：local / disks / remote + rememberEnabled。"""
+    return get_registry(request).snapshot()
 
 
 @router.get("/speeds")
@@ -149,7 +180,7 @@ async def volume_speeds(request: Request, _: dict = Depends(current_session)):
 @router.get("/usage")
 async def volume_usage(request: Request, _: dict = Depends(current_session)):
     """各已挂载卷容量（字节）：total/used/avail。"""
-    return await get_manager(request).usage()
+    return await get_registry(request).usage()
 
 
 @router.get("/sessions")
@@ -189,6 +220,7 @@ async def unlock_volume(
     request: Request,
     session: dict = Depends(current_session),
 ):
+    _require_external_key(key)
     manager = get_manager(request)
     try:
         await manager.unlock_volume(
@@ -213,6 +245,7 @@ async def mount_volume(
     request: Request,
     session: dict = Depends(current_session),
 ):
+    _require_external_key(key)
     manager = get_manager(request)
     try:
         await manager.mount_plain(key, writable=body.writable, actor=session["username"])
@@ -229,6 +262,7 @@ async def eject_volume(
     request: Request,
     session: dict = Depends(current_session),
 ):
+    _require_external_key(key)
     manager = get_manager(request)
     from app.transfers.api import _ensure_not_transferring
     _ensure_not_transferring(request, key)
@@ -276,6 +310,7 @@ async def forget_credential(
     request: Request,
     _: dict = Depends(current_session),
 ):
+    _require_external_key(key)
     await get_manager(request).forget(key)
     return {"ok": True}
 
@@ -295,6 +330,74 @@ async def disk_smart(
         if disk.get("id") == disk_id:
             return await query_smart(disk["path"], force=force)
     raise HTTPException(status_code=404, detail="磁盘不存在或已拔出")
+
+
+# ---------------------------------------------------------------- 远程存储
+
+
+def _remote_http_error(exc: RemoteStoreError) -> HTTPException:
+    if isinstance(exc, RemoteStoreExists):
+        return HTTPException(status_code=409, detail=str(exc))
+    if isinstance(exc, RemoteStoreNotFound):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/remote-stores")
+async def create_remote_store(
+    body: RemoteStoreBody,
+    request: Request,
+    session: dict = Depends(current_session),
+):
+    """新增远程 SFTP 存储并立即挂载；凭据加密保存，重启后自动重连。"""
+    remote = get_remote(request)
+    secret = body.password if body.authMode == "password" else body.privateKey
+    try:
+        store = await remote.create(
+            group=body.group,
+            host=body.host,
+            port=body.port,
+            username=body.username,
+            remote_path=body.remotePath,
+            auth_mode=body.authMode,
+            secret=secret,
+        )
+    except RemoteStoreError as exc:
+        raise _remote_http_error(exc) from exc
+    log.info("%s 添加远程存储 %s", session["username"], store.get("name"))
+    return {"ok": True, "store": store}
+
+
+@router.post("/remote-stores/{key}/reconnect")
+async def reconnect_remote_store(
+    key: str,
+    request: Request,
+    session: dict = Depends(current_session),
+):
+    remote = get_remote(request)
+    try:
+        store = await remote.reconnect(key)
+    except RemoteStoreError as exc:
+        raise _remote_http_error(exc) from exc
+    log.info("%s 重新连接远程存储 %s", session["username"], store.get("name"))
+    return {"ok": True, "store": store}
+
+
+@router.delete("/remote-stores/{key}")
+async def delete_remote_store(
+    key: str,
+    request: Request,
+    session: dict = Depends(current_session),
+):
+    from app.transfers.api import _ensure_not_transferring
+    _ensure_not_transferring(request, key)
+    remote = get_remote(request)
+    try:
+        await remote.delete(key)
+    except RemoteStoreError as exc:
+        raise _remote_http_error(exc) from exc
+    log.info("%s 删除远程存储 %s", session["username"], key)
+    return {"ok": True}
 
 
 # ---------------------------------------------------------------- SSE

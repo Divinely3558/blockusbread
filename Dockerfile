@@ -42,6 +42,7 @@ USER root
 #   util-linux     mount / umount / lsblk / blkid / losetup
 #   udev           设备硬件数据库，lsblk/blkid 识别型号与文件系统
 #   fuse3          FUSE 文件系统支持（dislocker/ntfs-3g 的挂载底座）
+#   sshfs          远程存储：经 SFTP 协议把远程目录 FUSE 挂载为本地存储
 #   tini           PID 1 init：收割 ntfs-3g/dislocker daemonize 后残留的僵尸进程
 #   ca-certificates 证书校验
 RUN apt-get update \
@@ -55,6 +56,7 @@ RUN apt-get update \
     util-linux \
     udev \
     fuse3 \
+    sshfs \
     tini \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -65,8 +67,8 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY . .
 
-# SFTP 共享根目录、sshd 特权分离目录与应用数据目录
-RUN mkdir -p /mnt/usb /run/sshd /app/data/logs
+# SFTP 共享根目录（local/ 本地存储、remote/ 远程存储挂载点）、sshd 特权分离目录与应用数据目录
+RUN mkdir -p /mnt/usb/local /mnt/usb/remote /run/sshd /app/data/logs
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

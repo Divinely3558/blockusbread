@@ -530,14 +530,26 @@ class MountManager:
 
     async def cleanup_orphans(self) -> None:
         """卸载 /proc/mounts 中挂在 /mnt/usb 下、但运行时未跟踪的条目；
-        并关闭上次异常退出残留的 bsbr-* cryptsetup 映射设备。"""
+        并关闭上次异常退出残留的 bsbr-* cryptsetup 映射设备。
+
+        /mnt/usb/local/*（Docker 管理，umount 后容器内映射失效直到重建）
+        与 /mnt/usb/remote/*（远程存储管理器负责）不在此清理范围内。
+        """
         try:
             proc_mounts = await asyncio.to_thread(_read_mount_points)
         except OSError:
             return
         prefix = str(MOUNT_ROOT)
+
+        def _protected(mp: str) -> bool:
+            local = f"{prefix}/local"
+            remote = f"{prefix}/remote"
+            return mp == local or mp.startswith(local + "/") \
+                or mp == remote or mp.startswith(remote + "/")
+
         targets = sorted(
-            (mp for mp in proc_mounts if mp.startswith(prefix + "/")),
+            (mp for mp in proc_mounts
+             if mp.startswith(prefix + "/") and not _protected(mp)),
             key=len,
             reverse=True,
         )

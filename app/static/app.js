@@ -223,14 +223,14 @@ function renderShareBanner() {
       <code class="pw-mask" title="密码已隐藏，点右侧按钮可复制">${"•".repeat(Math.max(8, String(s.password).length))}</code>
       <button class="btn mini js-copy" data-copy="${esc(s.password)}" data-label="密码">复制密码</button>
     </div>
-    <div class="banner-sub">挂载后的每个卷对应 SFTP 子目录：外接存储 &lt;磁盘ID&gt;/part&lt;序号&gt;/fs、本地存储 local/&lt;名称&gt;、远程存储 remote/&lt;名称&gt;；Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，手机播放器（VLC 等）可直接添加 SFTP；密码即网页登录密码，页面不显示明文</div>`;
+    <div class="banner-sub">挂载后的每个卷对应 SFTP 子目录：外接存储 &lt;磁盘ID&gt;/part&lt;序号&gt;/fs、本地存储 local/&lt;名称&gt;、远程存储 remote/&lt;组名&gt;/&lt;路径名&gt;；Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，手机播放器（VLC 等）可直接添加 SFTP；密码即网页登录密码，页面不显示明文</div>`;
   banner.hidden = false;
 }
 
 // 顶栏「挂载远程存储」按钮：打开弹窗表单（仅 SECRET_KEY 已配置时显示，见 render()）
 $("#btn-remote").addEventListener("click", () => {
   $("#remote-modal").hidden = false;
-  $("#remote-name").focus();
+  $("#remote-group").focus();
 });
 $("#remote-close").addEventListener("click", () => {
   $("#remote-modal").hidden = true;
@@ -250,11 +250,6 @@ $("#remote-quick-url").addEventListener("input", (e) => {
   if (host) $("#remote-host").value = host;
   if (port) $("#remote-port").value = port;
   if (path) $("#remote-path").value = path;
-
-  // 自动生成名称（使用主机名）
-  if (host && !$("#remote-name").value) {
-    $("#remote-name").value = host;
-  }
 });
 
 // 认证方式分段开关（密码 / SSH 私钥）
@@ -275,7 +270,7 @@ document.addEventListener("submit", async (e) => {
   errBox.hidden = true;
   const authMode = document.querySelector("#remote-auth-seg button.active")?.dataset.auth || "password";
   const body = {
-    name: $("#remote-name").value.trim(),
+    group: $("#remote-group").value.trim(),
     host: $("#remote-host").value.trim(),
     port: parseInt($("#remote-port").value, 10) || 22,
     username: $("#remote-username").value.trim(),
@@ -418,12 +413,12 @@ function render() {
   $("#storage-empty").hidden = hasLocal || hasDisks || hasRemote;
   // 顶栏「挂载远程存储」入口：SECRET_KEY 未配置时隐藏（凭据无法加密保存）
   $("#btn-remote").hidden = !state.rememberEnabled;
-  if (hasLocal) $("#local-list").innerHTML = state.local.map(renderLocalCard).join("");
+  if (hasLocal) $("#local-list").innerHTML = renderLocalGroup(state.local);
   if (hasDisks) {
     $("#disk-list").innerHTML = state.disks.map(renderDisk).join("");
     loadMissingSmart();
   }
-  if (hasRemote) $("#remote-list").innerHTML = state.remote.map(renderRemoteCard).join("");
+  if (hasRemote) $("#remote-list").innerHTML = renderRemoteGroups(state.remote);
 }
 
 // 容量条 / 速率计 / SFTP 路径行：本地、远程与外接共用同一套视觉
@@ -445,45 +440,77 @@ function speedMeterHtml(key) {
 }
 
 function sftpLineHtml(sftp) {
-  return `<div class="sftp-line"><i class="ic ic-folder"></i><code>${esc(sftp)}</code></div>`;
+  return `<div class="sftp-line"><button class="sftp-copy js-copy" data-copy="${esc(sftp)}" data-label="SFTP 路径" title="点击复制路径"><i class="ic ic-folder"></i></button><code>${esc(sftp)}</code></div>`;
 }
 
-function renderLocalCard(v) {
-  const sftp = sftpUrlFor(v.sftpPath);
+// 本地存储：所有文件夹映射合并为一张「本地文件」组卡片，每个位置一行（同 USB 多分区样式）
+function renderLocalGroup(vols) {
+  const meta = `本地存储 · ${vols.length} 个位置 · 始终可读写`;
   return `
     <div class="disk-card">
       <div class="disk-head">
         <div class="disk-title">
-          <span class="disk-icon"><i class="ic ic-folder"></i></span>
+          <span class="disk-icon"><i class="ic ic-local"></i></span>
           <div>
-            <div class="disk-name">${esc(v.name)}</div>
-            <div class="disk-meta">本地存储 · 始终可读写</div>
+            <div class="disk-name">本地文件</div>
+            <div class="disk-meta">${meta}</div>
           </div>
         </div>
       </div>
-      <div class="part-row state-mounted">
-        <div class="part-main">
-          <div class="part-info">
-            <div class="part-name"><span class="tag fs">本地</span> ${esc(v.name)}</div>
-          </div>
-          ${usageBarHtml(v.key)}
-          <div class="part-actions">
-            <span class="tag rw">读写模式</span>
-            <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
-              <i class="ic ic-folder-open"></i>浏览文件
-            </button>
-            <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
-              <i class="ic ic-copy"></i>复制 SFTP 路径
-            </button>
-            ${speedMeterHtml(v.key)}
-            ${sftpLineHtml(sftp)}
-          </div>
+      ${vols.map(renderLocalRow).join("")}
+    </div>`;
+}
+
+function renderLocalRow(v) {
+  const sftp = sftpUrlFor(v.sftpPath);
+  return `
+    <div class="part-row state-mounted">
+      <div class="part-main">
+        <div class="part-info">
+          <div class="part-name"><span class="tag fs">本地</span> ${esc(v.name)}</div>
+        </div>
+        ${usageBarHtml(v.key)}
+        <div class="part-actions">
+          <span class="tag rw">读写模式</span>
+          <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
+            <i class="ic ic-folder-open"></i>浏览文件
+          </button>
+          ${speedMeterHtml(v.key)}
+          ${sftpLineHtml(sftp)}
         </div>
       </div>
     </div>`;
 }
 
-function renderRemoteCard(v) {
+// 远程存储：按远程组分组，同组挂载合并进一张组卡片，每个远端路径一行（同 USB 多分区样式）
+function renderRemoteGroups(list) {
+  const groups = new Map();
+  for (const v of list) {
+    if (!groups.has(v.name)) groups.set(v.name, []);
+    groups.get(v.name).push(v);
+  }
+  return [...groups.values()].map(renderRemoteGroup).join("");
+}
+
+function renderRemoteGroup(vols) {
+  const endpoints = [...new Set(vols.map((v) => `${esc(v.host)}:${esc(v.port)}`))].join(" · ");
+  const meta = `${endpoints} · ${vols.length} 个路径`;
+  return `
+    <div class="disk-card">
+      <div class="disk-head">
+        <div class="disk-title">
+          <span class="disk-icon"><i class="ic ic-remote"></i></span>
+          <div>
+            <div class="disk-name">${esc(vols[0].name)}</div>
+            <div class="disk-meta">${meta}</div>
+          </div>
+        </div>
+      </div>
+      ${vols.map(renderRemoteRow).join("")}
+    </div>`;
+}
+
+function renderRemoteRow(v) {
   const sftp = sftpUrlFor(v.sftpPath);
   const stateCls = v.state === "error" ? "error" : v.state === "mounting" ? "mounting" : "mounted";
   const stateTag = v.state === "mounted"
@@ -492,48 +519,36 @@ function renderRemoteCard(v) {
       ? `<span class="tag busy"><i class="ic ic-loader ic-spin"></i>挂载中…</span>`
       : `<span class="tag unsupported">连接失败</span>`;
   return `
-    <div class="disk-card">
-      <div class="disk-head">
-        <div class="disk-title">
-          <span class="disk-icon"><i class="ic ic-network"></i></span>
-          <div>
-            <div class="disk-name">${esc(v.name)}</div>
-            <div class="disk-meta">${esc(v.host)}:${esc(v.port)} · 远端路径 ${esc(v.remotePath)}</div>
-          </div>
+    <div class="part-row state-${stateCls}">
+      <div class="part-main">
+        <div class="part-info">
+          <div class="part-name"><span class="tag fs">远程</span> ${esc(v.remotePath)}</div>
         </div>
-        <div class="disk-actions">
-          <button class="btn ${v.state === "error" ? "primary" : "ghost"}"
-                  onclick="reconnectRemote('${esc(v.key)}')">
-            <i class="ic ic-refresh"></i>${v.state === "error" ? "重新连接" : "刷新"}
-          </button>
-          <button class="btn danger" onclick="deleteRemote('${esc(v.key)}')">
-            <i class="ic ic-trash"></i>删除
-          </button>
-        </div>
-      </div>
-      <div class="part-row state-${stateCls}">
-        <div class="part-main">
-          <div class="part-info">
-            <div class="part-name"><span class="tag fs">远程</span> ${esc(v.name)}</div>
-          </div>
-          ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
-          <div class="part-actions">
-            ${stateTag}
-            ${v.state === "mounted" ? `
-              <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
-                <i class="ic ic-folder-open"></i>浏览文件
-              </button>
-              <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="存储 SFTP 路径">
-                <i class="ic ic-copy"></i>复制 SFTP 路径
-              </button>
-              ${speedMeterHtml(v.key)}
-              ${sftpLineHtml(sftp)}` : ""}
-          </div>
+        ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
+        <div class="part-actions">
+          ${stateTag}
+          ${v.state === "mounted" ? `
+            <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
+              <i class="ic ic-folder-open"></i>浏览文件
+            </button>
+            <button class="btn danger" onclick="deleteRemote('${esc(v.key)}')">
+              <i class="ic ic-trash"></i>删除
+            </button>
+            ${speedMeterHtml(v.key)}
+            ${sftpLineHtml(sftp)}` : ""}
+          ${v.state === "error" ? `
+            <button class="btn primary" onclick="reconnectRemote('${esc(v.key)}')">
+              <i class="ic ic-refresh"></i>重新连接
+            </button>` : ""}
+          ${v.state !== "mounted" ? `
+            <button class="btn danger" onclick="deleteRemote('${esc(v.key)}')">
+              <i class="ic ic-trash"></i>删除
+            </button>` : ""}
         </div>
       </div>
-      ${v.state === "error" && v.error
-        ? `<div class="part-error"><i class="ic ic-alert"></i><span>${esc(v.error)}</span></div>` : ""}
-    </div>`;
+    </div>
+    ${v.state === "error" && v.error
+      ? `<div class="part-error"><i class="ic ic-alert"></i><span>${esc(v.error)}</span></div>` : ""}`;
 }
 
 function renderDisk(disk) {
@@ -549,7 +564,7 @@ function renderDisk(disk) {
     <div class="disk-card">
       <div class="disk-head">
         <div class="disk-title">
-          <span class="disk-icon"><i class="ic ic-disk"></i></span>
+          <span class="disk-icon"><i class="ic ic-external"></i></span>
           <div>
             <div class="disk-name">${esc(disk.displayName)}</div>
             <div class="disk-meta">${meta}</div>
@@ -666,9 +681,6 @@ function renderActions(p) {
       <button class="btn primary" onclick="openBrowser('${esc(p.key)}')">
         <i class="ic ic-folder-open"></i>浏览文件
       </button>
-      <button class="btn primary js-copy" data-copy="${esc(sftp)}" data-label="卷 SFTP 路径">
-        <i class="ic ic-copy"></i>复制 SFTP 路径
-      </button>
       <button class="btn danger" onclick="ejectVolume('${esc(p.key)}')"><i class="ic ic-eject"></i>安全弹出</button>
       ${p.remembered
         ? `<button class="btn" onclick="forgetCredential('${esc(p.key)}')">忘记凭据</button>`
@@ -678,7 +690,7 @@ function renderActions(p) {
         <span class="speed speed-rx"><i class="ic ic-arrow-down"></i><span class="speed-val">0 B/s</span></span>
         <span class="speed speed-tx"><i class="ic ic-arrow-up"></i><span class="speed-val">0 B/s</span></span>
       </span>
-      <div class="sftp-line"><i class="ic ic-folder"></i><code>${esc(sftp)}</code></div>`;
+      ${sftpLineHtml(sftp)}`;
   }
   if (!p.supported) {
     return `<span class="tag unsupported">不支持${p.fstype ? "：" + esc(p.fstype) : ""}</span>`;
@@ -899,7 +911,7 @@ function findVolume(key) {
   }
   if (key.startsWith("remote:")) {
     const v = (state.remote || []).find((x) => x.key === key);
-    return v ? { name: v.name } : null;
+    return v ? { name: `${v.name}:${v.remotePath}` } : null;
   }
   for (const d of state.disks) {
     const p = d.partitions.find((x) => x.key === key);
@@ -1017,7 +1029,8 @@ function writableTargets() {
   }
   for (const v of state.remote || []) {
     if (v.state === "mounted") {
-      out.push({ key: v.key, label: v.name, group: "远程存储" });
+      // 同组多个挂载同名，补远端路径区分
+      out.push({ key: v.key, label: `${v.name}:${v.remotePath}`, group: "远程存储" });
     }
   }
   return out;

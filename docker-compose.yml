@@ -38,8 +38,18 @@ services:
       # udev 设备数据库：供 lsblk / blkid 正确识别设备型号与文件系统（只读）
       - /run/udev:/run/udev:ro
 
-      # 应用数据（“记住此卷”加密凭据、日志、SSH 主机密钥）
+      # 应用数据（“记住此卷”加密凭据、远程存储配置、日志、SSH 主机密钥）
       - ./data:/app/data
+
+      # 本地存储（可选）：把宿主机目录映射进 SFTP 共享，会作为“本地存储”
+      # 出现在管理页，始终读写、不可弹出，目录名即存储名。
+      # 不要把真实路径写进本文件（本文件会提交到仓库）！
+      # 实际映射请写在 docker-compose.override.yml（已被 .gitignore 忽略）：
+      #   services:
+      #     blockusbread:
+      #       volumes:
+      #         - /你的目录:/mnt/usb/local/存储名
+      # 支持多个映射，docker compose 会自动合并加载 override 文件。
 
   # 可选 HTTPS 反代（自签证书，默认不启动）：
   #   docker compose --profile tls up -d

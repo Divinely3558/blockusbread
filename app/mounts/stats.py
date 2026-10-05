@@ -5,7 +5,8 @@
 
 本模块直接采样 SFTP 会话进程（sshd 的 per-connection 子进程，本容器只允许
 SFTP）打开的文件描述符：
-- /proc/<pid>/fd/<fd> 符号链接 -> /mnt/usb/<磁盘ID>/part<序号>/fs/...
+- /proc/<pid>/fd/<fd> 符号链接 -> /mnt/usb/ 下的卷内路径（外接 / 本地 / 远程
+  三类存储统一按注册表中各卷 fs_dir 最长前缀归属）
 - /proc/<pid>/fdinfo/<fd> 中的 pos（文件偏移）增量即该 fd 上实际
   读/写的字节数，与页缓存无关；flags 低位区分读 / 写方向
     O_ACCMODE=0（RDONLY）-> rx 下载，1（WRONLY）-> tx 上传，2（RDWR）各半
@@ -74,8 +75,8 @@ def _read_fdinfo(pid: str, fd: str) -> tuple[int, int] | None:
 class SpeedMonitor:
     """周期采样每个已挂载卷的 SFTP 读/写速率（字节/秒）。"""
 
-    def __init__(self, manager, interval: float = 2.0) -> None:
-        self._manager = manager
+    def __init__(self, registry, interval: float = 2.0) -> None:
+        self._registry = registry
         self._interval = interval
         self._task: asyncio.Task | None = None
         self._stopping = False
@@ -117,12 +118,20 @@ class SpeedMonitor:
                 log.exception("速率采样异常")
             await asyncio.sleep(self._interval)
 
-    def _volume_index(self) -> dict[str, str]:
-        """{'<磁盘ID>/part<序号>': 卷 key}，只含当前已挂载的卷。"""
-        index: dict[str, str] = {}
-        for part, _runtime in self._manager.mounted_volumes():
-            index[f"{part.disk_id}/part{part.number}"] = part.key
-        return index
+    def _volume_index(self) -> list[tuple[str, str, str]]:
+        """[(fs_dir 前缀(含尾 /), 卷 key, 卷名)]，最长前缀优先。
+
+        覆盖三类存储：外接 <磁盘ID>/part<序号>/fs、本地 local/<名称>、
+        远程 remote/<名称>，fd 目标按前缀归属卷。
+        """
+        rows: list[tuple[str, str, str]] = []
+        for ref in self._registry.mounted_refs():
+            prefix = str(ref.fs_dir)
+            if not prefix.endswith("/"):
+                prefix += "/"
+            rows.append((prefix, ref.key, ref.name))
+        rows.sort(key=lambda r: len(r[0]), reverse=True)
+        return rows
 
     def _sample(self) -> None:
         now = time.monotonic()
@@ -162,14 +171,15 @@ class SpeedMonitor:
                     continue
                 if not target.startswith(root_prefix):
                     continue
-                # /mnt/usb/<磁盘ID>/part<序号>/fs/... -> 定位卷
-                tail = target[len(root_prefix):].split("/", 3)
-                if len(tail) < 3 or tail[2] != "fs":
+                # fd 目标按注册表 fs_dir 最长前缀归属卷
+                match = next(
+                    ((p, k, n) for p, k, n in volumes if target.startswith(p)),
+                    None,
+                )
+                if match is None:
                     continue
-                volume_key = volumes.get(f"{tail[0]}/{tail[1]}")
-                if volume_key is None:
-                    continue
-                rel_path = tail[3] if len(tail) > 3 else ""
+                prefix, volume_key, volume_name = match
+                rel_path = target[len(prefix):]
                 # 只统计常规文件（目录句柄 readdir 偏移无意义）
                 try:
                     if not os.path.isfile(target):
@@ -181,7 +191,7 @@ class SpeedMonitor:
                     continue
                 pos, flags = info
                 writable = bool(flags & _O_ACCMODE)   # WRONLY=1 / RDWR=2
-                open_rows.add((user, volume_key, rel_path, writable))
+                open_rows.add((user, volume_key, volume_name, rel_path, writable))
                 ident = (pid, fd)
                 seen.add(ident)
 
@@ -207,7 +217,7 @@ class SpeedMonitor:
 
         # 汇总速率（本周期有 fd 活动的卷；无流量的卷速率归零）
         active_keys = set(rx_bytes) | set(tx_bytes)
-        for key in volumes.values():
+        for _prefix, key, _name in volumes:
             if key in active_keys:
                 self._rates[key] = {
                     "rx": round(rx_bytes.get(key, 0) / self._interval, 1),
@@ -216,13 +226,15 @@ class SpeedMonitor:
             else:
                 self._rates[key] = {"rx": 0.0, "tx": 0.0}
         # 卸载/拔出的卷移除
-        for key in [k for k in self._rates if k not in volumes.values()]:
+        known_keys = {key for _p, key, _n in volumes}
+        for key in [k for k in self._rates if k not in known_keys]:
             self._rates.pop(key, None)
 
         # 会话快照：打开文件按卷归组，供面板与"占用中"提示使用
         files = [
-            {"user": user, "volume": key, "path": path, "writable": writable}
-            for user, key, path, writable in sorted(open_rows)
+            {"user": user, "volume": key, "volumeName": name,
+             "path": path, "writable": writable}
+            for user, key, name, path, writable in sorted(open_rows)
         ]
         by_volume: dict[str, list[dict]] = {}
         for row in files:

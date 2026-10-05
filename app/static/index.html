@@ -122,15 +122,15 @@
         <span style="font-size:11.5px;color:var(--text-muted);margin-top:4px;display:block">粘贴完整地址后自动填充下方字段，只需输入密码即可连接</span>
       </div>
       <div class="remote-grid">
-        <label class="field"><span>名称</span>
-          <input id="remote-name" type="text" maxlength="64" placeholder="如：NAS 影视库" required></label>
+        <label class="field"><span>远程组</span>
+          <input id="remote-group" type="text" maxlength="64" placeholder="留空默认为用户名"></label>
         <label class="field"><span>主机</span>
           <input id="remote-host" type="text" placeholder="IP 或域名" required></label>
         <label class="field field-narrow"><span>端口</span>
           <input id="remote-port" type="number" min="1" max="65535" value="22" required></label>
         <label class="field"><span>用户名</span>
           <input id="remote-username" type="text" autocomplete="off" required></label>
-        <label class="field"><span>远端路径</span>
+        <label class="field remote-path-field"><span>远端路径</span>
           <input id="remote-path" type="text" value="/" placeholder="/volume1/media"></label>
       </div>
       <div class="seg" id="remote-auth-seg" role="tablist">

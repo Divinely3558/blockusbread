@@ -25,9 +25,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from app.models import MountMode
-from app.mounts.manager import VolumeNotFound
-from app.web.api import current_session, get_manager
+from app.stores.registry import VolumeNotFound, VolumeRef
+from app.web.api import current_session, get_registry
 
 router = APIRouter(prefix="/api/volumes")
 log = logging.getLogger("web.files")
@@ -83,25 +82,27 @@ def sanitize_filename(raw: str) -> str:
     return cleaned
 
 
-def _mounted(request: Request, key: str):
-    """取已挂载卷；不存在/未挂载统一 404。"""
+def _volume(request: Request, key: str) -> VolumeRef:
+    """取当前可用（已挂载）的卷；不存在/未挂载统一 404。"""
     try:
-        return get_manager(request).mounted_partition(key)
+        return get_registry(request).lookup(key)
     except VolumeNotFound as exc:
-        raise HTTPException(status_code=404, detail="卷不存在、未挂载或已拔出") from exc
+        raise HTTPException(status_code=404, detail="存储不存在、未挂载或已拔出") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=404, detail="存储不存在、未挂载或已拔出") from exc
 
 
-def _require_writable(runtime) -> None:
-    if runtime.mode != MountMode.RW:
-        raise HTTPException(status_code=409, detail="该卷以只读模式挂载，不能写入或删除")
+def _require_writable(ref: VolumeRef) -> None:
+    if not ref.writable:
+        raise HTTPException(status_code=409, detail="该存储为只读模式，不能写入或删除")
 
 
-def _fs_root(request: Request, key: str):
-    part, runtime = _mounted(request, key)
-    root = Path(part.fs_dir)
+def _fs_root(request: Request, key: str) -> tuple[VolumeRef, Path]:
+    ref = _volume(request, key)
+    root = ref.fs_dir
     if not root.exists():
         raise HTTPException(status_code=404, detail="挂载点不可用")
-    return part, runtime, root
+    return ref, root
 
 
 # ---------------------------------------------------------------- 列目录
@@ -109,7 +110,7 @@ def _fs_root(request: Request, key: str):
 
 @router.get("/{key}/browse", dependencies=[Depends(current_session)])
 async def browse(key: str, request: Request, path: str = ""):
-    _part, runtime, root = _fs_root(request, key)
+    ref, root = _fs_root(request, key)
     directory = safe_resolve(root, path)
     if not directory.is_dir():
         raise HTTPException(status_code=400, detail="该路径不是目录")
@@ -142,7 +143,7 @@ async def browse(key: str, request: Request, path: str = ""):
 
     return {
         "path": path.strip("/"),
-        "writable": runtime.mode == MountMode.RW,
+        "writable": ref.writable,
         "crumbs": crumbs,
         "entries": entries,
     }
@@ -158,7 +159,7 @@ async def raw_file(
     path: str = "",
     download: int = 0,
 ):
-    _part, _runtime, root = _fs_root(request, key)
+    _ref, root = _fs_root(request, key)
     target = safe_resolve(root, path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -200,7 +201,7 @@ async def preview_text(
     内容以 JSON 返回、前端按纯文本（textContent）渲染，盘内的 HTML/脚本
     不会被执行；扩展名白名单 + 体积上限 + NUL 字节检测三重限制。
     """
-    _part, _runtime, root = _fs_root(request, key)
+    _ref, root = _fs_root(request, key)
     target = safe_resolve(root, path)
     if not target.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -253,8 +254,8 @@ async def upload_entry(
     file: UploadFile = File(...),
     session: dict = Depends(current_session),
 ):
-    _part, runtime, root = _fs_root(request, key)
-    _require_writable(runtime)
+    ref, root = _fs_root(request, key)
+    _require_writable(ref)
     directory = safe_resolve(root, path)
     if not directory.is_dir():
         raise HTTPException(status_code=400, detail="目标路径不是目录")
@@ -308,8 +309,8 @@ async def delete_entry(
     recursive: int = 0,
     session: dict = Depends(current_session),
 ):
-    _part, runtime, root = _fs_root(request, key)
-    _require_writable(runtime)
+    ref, root = _fs_root(request, key)
+    _require_writable(ref)
     if not path.strip():
         raise HTTPException(status_code=400, detail="不能删除卷根目录")
     target = safe_resolve(root, path)
@@ -345,8 +346,8 @@ async def rename_entry(
     request: Request,
     session: dict = Depends(current_session),
 ):
-    _part, runtime, root = _fs_root(request, key)
-    _require_writable(runtime)
+    ref, root = _fs_root(request, key)
+    _require_writable(ref)
     root_real = root.resolve()
     source = safe_resolve(root, body.path)
     if not source.exists() and not source.is_symlink():

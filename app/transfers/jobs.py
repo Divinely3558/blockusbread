@@ -26,11 +26,25 @@ log = logging.getLogger("transfers")
 
 _COPY_BUFSIZE = 1024 * 1024  # 1 MiB
 _HISTORY_LIMIT = 50
+_ETA_WINDOW_SECONDS = 10.0
+_ETA_MIN_RATE = 1024  # B/s，低于该值视为速率不可信，不下发 ETA
+
+
+class TransferConflict(RuntimeError):
+    """与排队中/进行中的任务路径重叠，拒绝入队。"""
 
 
 class _JobCanceled(Exception):
     """工作线程内的用户取消信号（不可使用 asyncio.CancelledError：
     那会在事件循环侧被当成任务取消并杀死常驻 worker）。"""
+
+
+def paths_overlap(key_a: str, abs_a: Path, key_b: str, abs_b: Path) -> bool:
+    """同卷上两路径相等或互为祖先目录即冲突；不同卷一律不冲突。"""
+    if key_a != key_b:
+        return False
+    a, b = Path(abs_a).resolve(), Path(abs_b).resolve()
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
 @dataclass
@@ -56,8 +70,35 @@ class TransferJob:
     started_at: float | None = None
     finished_at: float | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, repr=False)
+    # 最近约 10 秒的进度采样 [(monotonic_ts, bytes_done)]，事件循环侧写入
+    _samples: list[tuple[float, int]] = field(default_factory=list, repr=False)
+
+    def eta_fields(self) -> tuple[float, int | None]:
+        """(rateBps, etaSeconds)：滑动窗口估算速率与剩余秒数。
+
+        速率过低（< 1 KiB/s）或总量未知 / 已传完时 etaSeconds 为 None。
+        """
+        samples = self._samples
+        if len(samples) >= 2 and self.bytes_total > 0:
+            t0, b0 = samples[0]
+            t1, b1 = samples[-1]
+            if t1 > t0:
+                rate = (b1 - b0) / (t1 - t0)
+                remaining = self.bytes_total - self.bytes_done
+                if rate >= _ETA_MIN_RATE and remaining > 0:
+                    return round(rate, 1), max(1, int(remaining / rate))
+                return round(rate, 1), None
+        return 0.0, None
+
+    def record_sample(self, ts: float) -> None:
+        """记录一次进度采样，并裁剪出最近约 10 秒的窗口。"""
+        self._samples.append((ts, self.bytes_done))
+        cutoff = ts - _ETA_WINDOW_SECONDS - 0.5
+        while len(self._samples) > 2 and self._samples[0][0] < cutoff:
+            self._samples.pop(0)
 
     def snapshot(self) -> dict:
+        rate_bps, eta_seconds = self.eta_fields() if self.status == "running" else (0.0, None)
         return {
             "id": self.id,
             "srcKey": self.src_key,
@@ -73,6 +114,8 @@ class TransferJob:
             "filesDone": self.files_done,
             "current": self.current,
             "error": self.error,
+            "rateBps": rate_bps,
+            "etaSeconds": eta_seconds,
             "createdAt": int(self.created_at),
             "startedAt": int(self.started_at) if self.started_at else None,
             "finishedAt": int(self.finished_at) if self.finished_at else None,
@@ -232,6 +275,7 @@ class TransferManager:
         op: str,
         src_abs: Path,
         dst_dir_abs: Path,
+        volume_names: dict[str, str] | None = None,
     ) -> TransferJob:
         job = TransferJob(
             id=uuid.uuid4().hex[:12],
@@ -245,11 +289,47 @@ class TransferManager:
             dst_dir_abs=str(dst_dir_abs),
         )
         async with self._lock:
+            self._check_conflict(job, volume_names or {})
             self._jobs[job.id] = job
             self._trim_history()
         await self._publish()
         self._wake.set()
         return job
+
+    def _check_conflict(
+        self, job: TransferJob, volume_names: dict[str, str]
+    ) -> None:
+        """冲突预检：与 queued/running 任务的源/目标两两比较，重叠即拒绝入队。
+
+        任务登记两条规划路径：源 (src_key, src_abs) 与目标
+        (dst_key, dst_dir_abs/name)；不同卷不冲突，已完成/失败/取消不参与。
+        """
+        planned = [
+            (job.src_key, Path(job.src_abs), job.src_rel),
+            (
+                job.dst_key,
+                Path(job.dst_dir_abs) / job.name,
+                f"{job.dst_rel}/{job.name}".strip("/"),
+            ),
+        ]
+        for other in self._jobs.values():
+            if other.status not in ("queued", "running"):
+                continue
+            existing = [
+                (other.src_key, Path(other.src_abs)),
+                (other.dst_key, Path(other.dst_dir_abs) / other.name),
+            ]
+            for new_key, new_path, new_rel in planned:
+                for old_key, old_path in existing:
+                    if not paths_overlap(new_key, new_path, old_key, old_path):
+                        continue
+                    volume = volume_names.get(new_key) or new_key
+                    state_word = "进行中" if other.status == "running" else "排队中"
+                    raise TransferConflict(
+                        f"与{state_word}的任务「{other.name}」冲突："
+                        f"{volume} 上的 {new_rel} 将被该任务移动走或正在写入，"
+                        "请等其完成后再试"
+                    )
 
     def _trim_history(self) -> None:
         finished = [
@@ -275,6 +355,7 @@ class TransferManager:
     async def _run(self, job: TransferJob) -> None:
         job.status = "running"
         job.started_at = time.time()
+        job.record_sample(time.monotonic())
         await self._publish()
 
         ticker = asyncio.create_task(self._tick_loop())
@@ -306,6 +387,10 @@ class TransferManager:
     async def _tick_loop(self) -> None:
         while True:
             await asyncio.sleep(1)
+            now = time.monotonic()
+            for job in self._jobs.values():
+                if job.status == "running":
+                    job.record_sample(now)
             await self._publish()
 
     def cancel(self, job_id: str) -> bool:
