@@ -173,7 +173,7 @@ async def list_volumes(request: Request, _: dict = Depends(current_session)):
 
 @router.get("/speeds")
 async def volume_speeds(request: Request, _: dict = Depends(current_session)):
-    """各已挂载卷的实时传输速率（字节/秒）：rx=下载（读盘），tx=上传（写盘）。"""
+    """各已挂载卷底层硬盘的实时吞吐（字节/秒）：rx=读取，tx=写入。"""
     return request.app.state.speeds.rates()
 
 

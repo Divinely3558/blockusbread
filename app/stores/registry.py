@@ -33,6 +33,7 @@ class VolumeRef:
     sftp_path: str      # SFTP chroot 内相对子路径
     writable: bool
     ejectable: bool     # 仅外接 True
+    device: str | None = None  # 底层块设备节点（外接卷的分区），FUSE 挂载回退统计用
 
 
 class StoreRegistry:
@@ -100,6 +101,7 @@ class StoreRegistry:
             sftp_path=f"{part.disk_id}/part{part.number}/fs",
             writable=writable,
             ejectable=True,
+            device=runtime.device,
         )
 
     def lookup(self, key: str) -> VolumeRef:
@@ -151,6 +153,7 @@ class StoreRegistry:
                 sftp_path=f"{part.disk_id}/part{part.number}/fs",
                 writable=runtime.mode == MountMode.RW,
                 ejectable=True,
+                device=runtime.device,
             ))
         refs.extend(self._local_ref(row["name"]) for row in self._local.list_stores())
         for row in self._remote.list_stores():

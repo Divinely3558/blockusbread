@@ -6,6 +6,8 @@ import json
 import logging
 import re
 import subprocess
+from collections import Counter
+from dataclasses import replace
 
 from app.models import DiskInfo, PartitionInfo
 
@@ -158,6 +160,27 @@ def scan() -> list[DiskInfo]:
                 partitions=sorted(partitions, key=lambda p: p.number),
             )
         )
+
+    # 同一硬盘盒的 USB 桥接芯片可能对盒内多块盘上报相同序列号（USB 3.0
+    # UAS 桥接下常见，USB 2.0 同一盒子往往正常）：disk_id 撞车会让挂载
+    # 目录 / SFTP 路径互相覆盖，表现为两块盘显示同一份数据。对冲突的盘
+    # 统一追加内核设备名后缀（与扫描顺序无关）：<序列号>-sdc、<序列号>-sdd
+    counts = Counter(d.disk_id for d in disks)
+    if any(n > 1 for n in counts.values()):
+        fixed: list[DiskInfo] = []
+        for d in disks:
+            if counts[d.disk_id] <= 1:
+                fixed.append(d)
+                continue
+            new_id = f"{d.disk_id}-{d.name}"
+            fixed.append(replace(
+                d,
+                disk_id=new_id,
+                partitions=[replace(p, disk_id=new_id) for p in d.partitions],
+            ))
+        disks = fixed
+        log.warning("检测到多块磁盘序列号相同，已追加设备名后缀区分：%s",
+                    [(d.name, d.disk_id) for d in disks])
 
     log.debug("扫描到 %d 块外接磁盘：%s", len(disks), [d.name for d in disks])
     return disks

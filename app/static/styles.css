@@ -720,7 +720,27 @@ code {
   color: var(--text-secondary);
 }
 .sftp-line .ic { width: 15px; height: 15px; color: var(--primary); }
-.sftp-line code {
+/* 前置图标仅装饰；点击路径条本身复制 */
+.sftp-ic { display: inline-flex; flex: none; }
+/* 路径条即复制按钮 */
+.sftp-copy {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: none;
+  border: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 8px;
+  transition: transform 0.15s ease, filter 0.15s ease;
+}
+.sftp-copy:hover { transform: translateY(-1px); filter: brightness(1.2); }
+.sftp-copy:active { transform: translateY(0); }
+.sftp-copy code {
   background: var(--surface-2);
   border: 1px solid var(--border);
   padding: 4px 10px;
@@ -728,21 +748,6 @@ code {
   font-size: 12px;
   word-break: break-all;
 }
-/* sftp 行前的文件夹图标即复制按钮：点击复制路径 */
-.sftp-copy {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 3px;
-  background: none;
-  border: none;
-  border-radius: 6px;
-  cursor: pointer;
-  color: var(--primary);
-  transition: background 0.15s ease, transform 0.15s ease;
-}
-.sftp-copy:hover { background: var(--surface-2); transform: translateY(-1px); }
-.sftp-copy:active { transform: translateY(0); }
 
 /* 卷容量条 */
 .usage-bar {
@@ -1305,6 +1310,14 @@ code {
   justify-content: space-between;
   gap: 10px;
 }
+/* 传输中的实时速度：顶部行靠右、紧挨状态徽章 */
+.job-rate {
+  margin-left: auto;
+  font-size: 12.5px;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .job-name {
   display: inline-flex;
   align-items: center;
@@ -1605,9 +1618,17 @@ code {
   .part-main { flex-direction: column; align-items: stretch; }
   .part-actions { width: 100%; }
   .part-actions .btn { flex: 1 1 100%; width: 100%; justify-content: center; }
+  /* 容量条与读写模式标签同行，按钮仍各占一行 */
+  .part-actions .usage-bar {
+    flex: 1 1 auto;
+    width: auto;
+    margin: 0;
+  }
   .speed-meter { width: 100%; margin-left: 0; justify-content: stretch; gap: 10px; }
   .speed { flex: 1 1 0; justify-content: center; max-width: none; }
   .sftp-line { flex-wrap: wrap; }
+  /* 手机端隐藏前置装饰图标：直接点路径条复制 */
+  .sftp-ic { display: none; }
   .usage-detail { display: none; }
   .usage-bar { gap: 8px; margin: 10px 0 4px; }
   .desktop-only { display: none !important; }

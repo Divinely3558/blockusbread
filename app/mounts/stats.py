@@ -1,15 +1,15 @@
-"""按已挂载卷统计 SFTP 实时传输速率。
+"""各卷实时速率：硬盘块设备的真实读/写吞吐。
 
-块设备 /proc/diskstats 受页缓存影响很大（写入先入缓存、刷盘是零散突发，
-读取命中缓存时统计为 0），不能反映 SFTP 客户端实际感受到的传输速度。
+速率直接读块设备统计（/sys/dev/block/<maj:min>/stat 的扇区计数差分，
+每扇区 512 字节），反映硬盘实际发生的读/写——这正是速度计想表达的
+“硬盘现在多快”，而不是某个客户端链路的网速。卷到设备的解析：
+- 挂载点 st_dev：外接分区、本地 bind 目录、cryptsetup 映射（dm-*）
+- FUSE（dislocker 解锁的 BitLocker）：st_dev 是匿名设备，回退到卷的
+  底层分区设备节点（VolumeRef.device）
+- 远程 sshfs：无块设备，速率恒 0
 
-本模块直接采样 SFTP 会话进程（sshd 的 per-connection 子进程，本容器只允许
-SFTP）打开的文件描述符：
-- /proc/<pid>/fd/<fd> 符号链接 -> /mnt/usb/ 下的卷内路径（外接 / 本地 / 远程
-  三类存储统一按注册表中各卷 fs_dir 最长前缀归属）
-- /proc/<pid>/fdinfo/<fd> 中的 pos（文件偏移）增量即该 fd 上实际
-  读/写的字节数，与页缓存无关；flags 低位区分读 / 写方向
-    O_ACCMODE=0（RDONLY）-> rx 下载，1（WRONLY）-> tx 上传，2（RDWR）各半
+SFTP 会话快照（连接数 / 用户 / 各卷打开中的文件）仍通过扫描 sshd
+会话进程的文件描述符获得，供 /api/sessions 与「占用中」提示使用。
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ __all__ = ["SpeedMonitor"]
 
 _PROC = "/proc"
 _O_ACCMODE = 3
+_SECTOR_SIZE = 512
 
 log = logging.getLogger("speed")
 
@@ -72,16 +73,36 @@ def _read_fdinfo(pid: str, fd: str) -> tuple[int, int] | None:
     return pos, flags
 
 
+def _parse_block_stat(text: str) -> tuple[int, int] | None:
+    """解析块设备 stat 行：返回（累计读扇区, 累计写扇区）；无效返回 None。"""
+    parts = text.split()
+    if len(parts) <= 6:
+        return None
+    try:
+        return int(parts[2]), int(parts[6])
+    except ValueError:
+        return None
+
+
+def _read_block_stat(dev: str) -> tuple[int, int] | None:
+    """读取块设备累计扇区数：dev 形如 "8:0"（对应 /sys/dev/block/8:0/stat）。"""
+    try:
+        with open(f"/sys/dev/block/{dev}/stat", encoding="utf-8") as fh:
+            return _parse_block_stat(fh.read())
+    except OSError:
+        return None
+
+
 class SpeedMonitor:
-    """周期采样每个已挂载卷的 SFTP 读/写速率（字节/秒）。"""
+    """周期采样：每卷底层硬盘的读/写速率 + SFTP 会话快照。"""
 
     def __init__(self, registry, interval: float = 2.0) -> None:
         self._registry = registry
         self._interval = interval
         self._task: asyncio.Task | None = None
         self._stopping = False
-        # (pid, fd) -> (monotonic 时间戳, pos)
-        self._last: dict[tuple[str, str], tuple[float, int]] = {}
+        # dev "maj:min" -> (采样时刻, 累计读扇区, 累计写扇区)
+        self._dev_last: dict[str, tuple[float, int, int]] = {}
         self._rates: dict[str, dict[str, float]] = {}
         # 最近一次采样的 SFTP 会话快照（连接数 / 用户 / 打开文件）
         self._session_info: dict = {"connections": 0, "users": [], "openFiles": [], "volumes": {}}
@@ -118,40 +139,77 @@ class SpeedMonitor:
                 log.exception("速率采样异常")
             await asyncio.sleep(self._interval)
 
-    def _volume_index(self) -> list[tuple[str, str, str]]:
-        """[(fs_dir 前缀(含尾 /), 卷 key, 卷名)]，最长前缀优先。
+    # ------------------------------------------------------------ 硬盘速率
 
-        覆盖三类存储：外接 <磁盘ID>/part<序号>/fs、本地 local/<名称>、
-        远程 remote/<名称>，fd 目标按前缀归属卷。
-        """
-        rows: list[tuple[str, str, str]] = []
-        for ref in self._registry.mounted_refs():
+    def _resolve_device(self, ref) -> str | None:
+        """卷 → 块设备 "maj:min"；无块设备（远程 / 无底层信息的 FUSE）返回 None。"""
+        try:
+            st = os.stat(ref.fs_dir)
+        except OSError:
+            return None
+        dev = f"{os.major(st.st_dev)}:{os.minor(st.st_dev)}"
+        if os.path.exists(f"/sys/dev/block/{dev}/stat"):
+            return dev
+        # FUSE（dislocker 解锁的 BitLocker）：st_dev 是匿名设备，
+        # 回退到卷的底层分区 / 映射设备节点
+        if ref.device:
+            try:
+                st = os.stat(ref.device)
+            except OSError:
+                return None
+            return f"{os.major(st.st_rdev)}:{os.minor(st.st_rdev)}"
+        return None
+
+    def _sample_disk_rates(self, refs, now: float) -> None:
+        """各卷底层硬盘的读/写速率：扇区计数差分 ÷ 采样间隔。"""
+        zero = {"rx": 0.0, "tx": 0.0}
+        dev_seen: set[str] = set()
+        for ref in refs:
+            dev = self._resolve_device(ref)
+            if dev is None:
+                self._rates[ref.key] = zero
+                continue
+            counts = _read_block_stat(dev)
+            if counts is None:
+                self._rates[ref.key] = zero
+                continue
+            dev_seen.add(dev)
+            prev = self._dev_last.get(dev)
+            self._dev_last[dev] = (now, counts[0], counts[1])
+            if prev is None or now <= prev[0]:
+                self._rates[ref.key] = zero   # 首个周期只建基线
+                continue
+            dt = now - prev[0]
+            rx = max(0, counts[0] - prev[1]) * _SECTOR_SIZE / dt
+            tx = max(0, counts[1] - prev[2]) * _SECTOR_SIZE / dt
+            self._rates[ref.key] = {"rx": round(rx, 1), "tx": round(tx, 1)}
+        # 卸载/拔出的卷移除；不再活动的设备基线清理
+        known = {ref.key for ref in refs}
+        for key in [k for k in self._rates if k not in known]:
+            self._rates.pop(key, None)
+        self._dev_last = {d: v for d, v in self._dev_last.items() if d in dev_seen}
+
+    # ------------------------------------------------------------ SFTP 会话快照
+
+    def _sample_sessions(self, refs) -> None:
+        """扫描 sshd 会话进程的文件描述符：连接数 / 用户 / 各卷打开中的文件。"""
+        volumes = []
+        for ref in refs:
             prefix = str(ref.fs_dir)
             if not prefix.endswith("/"):
                 prefix += "/"
-            rows.append((prefix, ref.key, ref.name))
-        rows.sort(key=lambda r: len(r[0]), reverse=True)
-        return rows
-
-    def _sample(self) -> None:
-        now = time.monotonic()
-        volumes = self._volume_index()
+            volumes.append((prefix, ref.key, ref.name))
+        volumes.sort(key=lambda r: len(r[0]), reverse=True)
         root_prefix = str(MOUNT_ROOT).rstrip("/") + "/"
 
-        # 卷 key -> 本周期累计字节
-        rx_bytes: dict[str, int] = {}
-        tx_bytes: dict[str, int] = {}
-        seen: set[tuple[str, str]] = set()
-
-        # SFTP 会话快照
         connected_users: set[str] = set()
         connection_count = 0
-        open_rows: set[tuple[str, str, str, bool]] = set()
+        open_rows: set[tuple[str, str, str, str, bool]] = set()
 
         try:
             pids = [p for p in os.listdir(_PROC) if p.isdigit()]
         except OSError:
-            return
+            pids = []
 
         for pid in pids:
             user = _session_user(pid)
@@ -189,46 +247,9 @@ class SpeedMonitor:
                 info = _read_fdinfo(pid, fd)
                 if info is None:
                     continue
-                pos, flags = info
+                _pos, flags = info
                 writable = bool(flags & _O_ACCMODE)   # WRONLY=1 / RDWR=2
                 open_rows.add((user, volume_key, volume_name, rel_path, writable))
-                ident = (pid, fd)
-                seen.add(ident)
-
-                prev = self._last.get(ident)
-                if prev is not None:
-                    delta = pos - prev[1]
-                    if delta > 0:
-                        mode = flags & _O_ACCMODE
-                        if mode == 0:       # O_RDONLY -> 下载
-                            rx_bytes[volume_key] = rx_bytes.get(volume_key, 0) + delta
-                        elif mode == 1:     # O_WRONLY -> 上传
-                            tx_bytes[volume_key] = tx_bytes.get(volume_key, 0) + delta
-                        else:               # O_RDWR：罕见，均摊
-                            half = delta // 2
-                            rx_bytes[volume_key] = rx_bytes.get(volume_key, 0) + half
-                            tx_bytes[volume_key] = tx_bytes.get(volume_key, 0) + delta - half
-                # 新出现的 fd 以当前 pos 为基线（文件通常顺序读写，pos 即本窗口内流量）
-                self._last[ident] = (now, pos)
-
-        # 已关闭的 fd / 消失的会话清理
-        for ident in [k for k in self._last if k not in seen]:
-            self._last.pop(ident, None)
-
-        # 汇总速率（本周期有 fd 活动的卷；无流量的卷速率归零）
-        active_keys = set(rx_bytes) | set(tx_bytes)
-        for _prefix, key, _name in volumes:
-            if key in active_keys:
-                self._rates[key] = {
-                    "rx": round(rx_bytes.get(key, 0) / self._interval, 1),
-                    "tx": round(tx_bytes.get(key, 0) / self._interval, 1),
-                }
-            else:
-                self._rates[key] = {"rx": 0.0, "tx": 0.0}
-        # 卸载/拔出的卷移除
-        known_keys = {key for _p, key, _n in volumes}
-        for key in [k for k in self._rates if k not in known_keys]:
-            self._rates.pop(key, None)
 
         # 会话快照：打开文件按卷归组，供面板与"占用中"提示使用
         files = [
@@ -245,3 +266,9 @@ class SpeedMonitor:
             "openFiles": files,
             "volumes": by_volume,
         }
+
+    def _sample(self) -> None:
+        now = time.monotonic()
+        refs = self._registry.mounted_refs()
+        self._sample_disk_rates(refs, now)
+        self._sample_sessions(refs)

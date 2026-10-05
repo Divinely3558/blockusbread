@@ -1,6 +1,8 @@
-"""设备扫描：外接盘过滤、superfloppy、GBK 解码、分区号解析。"""
+"""设备扫描：外接盘过滤、superfloppy、GBK 解码、分区号解析、同序列号去重。"""
 
 from __future__ import annotations
+
+import json
 
 from app.devices import scanner
 
@@ -58,6 +60,51 @@ def test_scan_filters_internal_and_handles_superfloppy(
     assert whole.fstype == "exfat"
     assert whole.label == "备份盘"
     assert whole.uuid == "u-sdc"
+
+
+def test_same_serial_disks_get_unique_ids(monkeypatch):
+    """同一硬盘盒两块盘被 USB3.0 桥接芯片上报相同序列号：
+    disk_id 追加设备名后缀，挂载目录 / SFTP 路径不得互相覆盖。"""
+    payload = {
+        "blockdevices": [
+            {
+                "name": "/dev/sdc", "size": 1_000_204_886_016, "type": "disk",
+                "fstype": None, "label": None, "uuid": None, "partuuid": None,
+                "serial": "00A1234567AD", "model": "Enclosure", "vendor": "USB",
+                "tran": "usb", "rm": True, "hotplug": True,
+                "children": [{
+                    "name": "/dev/sdc1", "size": 1_000_204_886_016, "type": "part",
+                    "fstype": "bitlocker", "label": None,
+                    "uuid": "u-bitlocker", "partuuid": "pu-sdc1",
+                }],
+            },
+            {
+                "name": "/dev/sdd", "size": 1_000_204_886_016, "type": "disk",
+                "fstype": None, "label": None, "uuid": None, "partuuid": None,
+                "serial": "00A1234567AD", "model": "Enclosure", "vendor": "USB",
+                "tran": "usb", "rm": True, "hotplug": True,
+                "children": [{
+                    "name": "/dev/sdd1", "size": 1_000_204_886_016, "type": "part",
+                    "fstype": "ext4", "label": "data",
+                    "uuid": "u-ext4", "partuuid": "pu-sdd1",
+                }],
+            },
+        ]
+    }
+
+    def fake_run(cmd: list[str], timeout: int = 20) -> str:
+        if cmd[0] == "lsblk":
+            return json.dumps(payload)
+        return ""  # blkid 新鲜探测返回空，回退 lsblk 字段
+
+    monkeypatch.setattr(scanner, "_run", fake_run)
+    disks = scanner.scan()
+
+    assert [d.disk_id for d in disks] == ["00A1234567AD-sdc", "00A1234567AD-sdd"]
+    # 分区对象同步携带新 disk_id：挂载目录互不相同
+    assert all(p.disk_id == d.disk_id for d in disks for p in d.partitions)
+    dirs = {p.mount_dir for d in disks for p in d.partitions}
+    assert len(dirs) == 2
 
 
 def test_scan_hotplug_sata_bridge_treated_as_external(monkeypatch):

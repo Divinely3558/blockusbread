@@ -433,14 +433,14 @@ function usageBarHtml(key) {
 function speedMeterHtml(key) {
   return `
     <span class="speed-meter idle" data-speed-key="${esc(key)}"
-          title="实时传输速度：下载（存储至客户端）/ 上传（客户端至存储）">
+          title="硬盘实时速度：↓ 读取 / ↑ 写入">
       <span class="speed speed-rx"><i class="ic ic-arrow-down"></i><span class="speed-val">0 B/s</span></span>
       <span class="speed speed-tx"><i class="ic ic-arrow-up"></i><span class="speed-val">0 B/s</span></span>
     </span>`;
 }
 
 function sftpLineHtml(sftp) {
-  return `<div class="sftp-line"><button class="sftp-copy js-copy" data-copy="${esc(sftp)}" data-label="SFTP 路径" title="点击复制路径"><i class="ic ic-folder"></i></button><code>${esc(sftp)}</code></div>`;
+  return `<div class="sftp-line"><span class="sftp-ic"><i class="ic ic-folder"></i></span><button class="sftp-copy js-copy" data-copy="${esc(sftp)}" data-label="SFTP 路径" title="点击复制路径"><code>${esc(sftp)}</code></button></div>`;
 }
 
 // 本地存储：所有文件夹映射合并为一张「本地文件」组卡片，每个位置一行（同 USB 多分区样式）
@@ -469,8 +469,8 @@ function renderLocalRow(v) {
         <div class="part-info">
           <div class="part-name"><span class="tag fs">本地</span> ${esc(v.name)}</div>
         </div>
-        ${usageBarHtml(v.key)}
         <div class="part-actions">
+          ${usageBarHtml(v.key)}
           <span class="tag rw">读写模式</span>
           <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
             <i class="ic ic-folder-open"></i>浏览文件
@@ -524,8 +524,8 @@ function renderRemoteRow(v) {
         <div class="part-info">
           <div class="part-name"><span class="tag fs">远程</span> ${esc(v.remotePath)}</div>
         </div>
-        ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
         <div class="part-actions">
+          ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
           ${stateTag}
           ${v.state === "mounted" ? `
             <button class="btn primary" onclick="openBrowser('${esc(v.key)}')">
@@ -655,12 +655,14 @@ function renderPartition(p) {
         <div class="part-info">
           <div class="part-name">${tags} ${title}</div>
         </div>
-        ${p.state === "mounted" ? `
-        <span class="usage-bar" data-usage-key="${esc(p.key)}" title="卷容量与剩余空间">
-          <span class="usage-track"><span class="usage-fill" style="width:0%"></span></span>
-          <span class="usage-meta"><span class="usage-pct">—</span><span class="usage-detail">—</span></span>
-        </span>` : ""}
-        <div class="part-actions">${renderActions(p)}</div>
+        <div class="part-actions">
+          ${p.state === "mounted" ? `
+          <span class="usage-bar" data-usage-key="${esc(p.key)}" title="卷容量与剩余空间">
+            <span class="usage-track"><span class="usage-fill" style="width:0%"></span></span>
+            <span class="usage-meta"><span class="usage-pct">—</span><span class="usage-detail">—</span></span>
+          </span>` : ""}
+          ${renderActions(p)}
+        </div>
       </div>
       ${p.state === "error" && p.error
         ? `<div class="part-error"><i class="ic ic-alert"></i><span>${esc(p.error)}</span></div>` : ""}
@@ -686,7 +688,7 @@ function renderActions(p) {
         ? `<button class="btn" onclick="forgetCredential('${esc(p.key)}')">忘记凭据</button>`
         : ""}
       <span class="speed-meter idle" data-speed-key="${esc(p.key)}"
-            title="实时传输速度：下载（U 盘至客户端）/ 上传（客户端至 U 盘）">
+            title="U 盘实时速度：↓ 读取 / ↑ 写入">
         <span class="speed speed-rx"><i class="ic ic-arrow-down"></i><span class="speed-val">0 B/s</span></span>
         <span class="speed speed-tx"><i class="ic ic-arrow-up"></i><span class="speed-val">0 B/s</span></span>
       </span>
@@ -1403,6 +1405,7 @@ function renderJobs() {
       <div class="job-item job-${j.status}">
         <div class="job-head">
           <div class="job-name" title="${esc(j.name)}"><i class="ic ${j.op === "copy" ? "ic-copy" : "ic-move"}"></i>${esc(j.name)}</div>
+          ${j.status === "running" ? `<span class="job-rate">${humanRate(j.rateBps)}</span>` : ""}
           <span class="${tagCls}">${opLabel} · ${statusText}</span>
         </div>
         <div class="job-route">${esc(shortKey(j.srcKey))}<i class="ic ic-arrow-right"></i>${esc(shortKey(j.dstKey))}${j.dstPath ? " / " + esc(j.dstPath) : ""}</div>

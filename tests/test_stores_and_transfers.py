@@ -114,6 +114,117 @@ def test_eta_smoothed_by_ewma():
     assert rate <= 260.0
 
 
+def test_eta_warmup_phase_returns_none():
+    """开局阶段（缓存预热/预分配）不下发剩余时间。"""
+    job = _job(total=100_000)
+    job.bytes_total = 100_000
+    job.record_sample(0.0)
+    job.bytes_done = 40_000
+    job.record_sample(5.0)           # 距开始仅 5 秒 < 8 秒预热期
+    assert job._compute_eta() == (0.0, None)
+
+
+def test_eta_frozen_during_overhead_window():
+    """纯额外耗时窗口（预分配/校验/刷盘，无数据落盘）冻结 EMA：
+    剩余时间保持原值，不被 0 吞吐拉垮。"""
+    job = _job(total=100_000)
+    job.bytes_total = 100_000
+    job.record_sample(0.0)
+    job.bytes_done = 10_000
+    job.record_sample(10.0)          # 吞吐量 1000 B/s
+    rate1, _ = job._compute_eta()
+    assert rate1 == 1000.0
+
+    # 之后 10 秒毫无落盘（如大文件预分配 / fsync），字节数不变
+    job.record_sample(15.0)
+    job.record_sample(20.0)
+    rate2, _ = job._compute_eta()
+    assert rate2 == 1000.0           # EMA 冻结，不被拉垮
+
+    # 恢复落盘后 EMA 正常继续（跨过停滞期补上更大的平滑步长）
+    job.bytes_done = 12_000
+    job.record_sample(30.0)
+    rate3, _ = job._compute_eta()
+    assert 200.0 < rate3 < 1000.0
+
+
+# ------------------------------------------------------------ 硬盘速率
+
+
+def test_parse_block_stat_sectors():
+    """stat 行第 3 / 7 个字段分别是累计读、写扇区数。"""
+    from app.mounts.stats import _parse_block_stat
+
+    line = " 1000 0 50000 100 2000 0 80000 200 0 300 0 0 0 0 0 0 0"
+    assert _parse_block_stat(line) == (50000, 80000)
+
+
+def test_parse_block_stat_invalid():
+    from app.mounts.stats import _parse_block_stat
+
+    assert _parse_block_stat("") is None
+    assert _parse_block_stat("1 2 3") is None
+    assert _parse_block_stat("a b c d e f g h") is None
+
+
+def test_speed_monitor_disk_rates(monkeypatch, tmp_path):
+    """速率 = 块设备扇区差分 × 512 ÷ 采样间隔；无设备卷恒 0。"""
+    import app.mounts.stats as stats_mod
+    from app.mounts.stats import SpeedMonitor
+    from app.stores.registry import VolumeRef
+
+    counts = {"8:0": (1000, 500), "8:16": (0, 2000)}
+    monkeypatch.setattr(stats_mod, "_read_block_stat", lambda dev: counts.get(dev))
+    monkeypatch.setattr(
+        SpeedMonitor, "_resolve_device",
+        lambda self, ref: {"a": "8:0", "b": "8:16", "c": None}[ref.key],
+    )
+
+    def ref(key):
+        return VolumeRef(key=key, kind="external", name=key,
+                         fs_dir=tmp_path / key, sftp_path="p",
+                         writable=True, ejectable=True)
+
+    refs = [ref("a"), ref("b"), ref("c")]
+    reg = SimpleNamespace(mounted_refs=lambda: refs)
+    mon = SpeedMonitor(reg, interval=2.0)
+
+    mon._sample_disk_rates(refs, now=10.0)     # 首个周期只建基线
+    assert mon.rates()["a"] == {"rx": 0.0, "tx": 0.0}
+
+    counts["8:0"] = (1100, 510)                # 读 +100 扇区，写 +10 扇区
+    counts["8:16"] = (0, 4000)                 # 写 +2000 扇区
+    mon._sample_disk_rates(refs, now=12.0)
+    rates = mon.rates()
+    assert rates["a"] == {"rx": 25600.0, "tx": 2560.0}
+    assert rates["b"] == {"rx": 0.0, "tx": 512000.0}
+    assert rates["c"] == {"rx": 0.0, "tx": 0.0}
+
+
+def test_speed_monitor_prunes_gone_volumes(monkeypatch, tmp_path):
+    """卷卸载后速率表同步移除。"""
+    import app.mounts.stats as stats_mod
+    from app.mounts.stats import SpeedMonitor
+    from app.stores.registry import VolumeRef
+
+    monkeypatch.setattr(stats_mod, "_read_block_stat", lambda dev: None)
+    monkeypatch.setattr(SpeedMonitor, "_resolve_device", lambda self, ref: None)
+
+    def ref(key):
+        return VolumeRef(key=key, kind="remote", name=key,
+                         fs_dir=tmp_path / key, sftp_path="p",
+                         writable=True, ejectable=False)
+
+    reg = SimpleNamespace(mounted_refs=lambda: [ref("k1")])
+    mon = SpeedMonitor(reg, interval=2.0)
+    mon._sample_disk_rates(reg.mounted_refs(), now=1.0)
+    assert set(mon.rates()) == {"k1"}
+
+    reg.mounted_refs = lambda: []              # 卷已卸载
+    mon._sample_disk_rates(reg.mounted_refs(), now=3.0)
+    assert mon.rates() == {}
+
+
 def test_eta_none_without_total():
     job = _job(total=0)
     job.record_sample(0.0)
@@ -364,8 +475,8 @@ def _fake_external_manager():
         key="ext-ro", label=None, number=2,
         fs_dir=Path("/mnt/usb/EXT1-p2/fs"), disk_id="EXT1",
     )
-    runtime_rw = SimpleNamespace(mode=MountMode.RW)
-    runtime_ro = SimpleNamespace(mode=MountMode.RO)
+    runtime_rw = SimpleNamespace(mode=MountMode.RW, device="/dev/sdz1")
+    runtime_ro = SimpleNamespace(mode=MountMode.RO, device="/dev/sdz2")
 
     class FakeManager:
         def snapshot(self):
