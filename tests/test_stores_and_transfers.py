@@ -15,6 +15,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.models import MountMode
+from app.mounts.commands import MountInfo
 from app.mounts.letters import DriveLetterRegistry
 from app.stores.local import LocalStoreManager
 from app.stores.registry import StoreRegistry, VolumeNotFound, VolumeUnavailable
@@ -244,16 +245,22 @@ def test_local_store_discovery(tmp_path, monkeypatch):
     (root / ".hidden").mkdir()
     (root / "file.txt").write_text("x", encoding="utf-8")
 
-    # 模拟 /proc/mounts：只有 Docker bind 的一级目录算本地存储
+    # 模拟 /proc/self/mountinfo：只有 Docker bind（root 非 "/"）的一级目录算本地存储
     fake = [
-        (f"{root}/影视", "/home/host/media", "ext4"),
-        (f"{root}/.hidden", "/home/host/.h", "ext4"),
-        (f"{root}/file.txt", "/home/host/f.txt", "ext4"),
-        (f"{root}/usb", "/dev/sdb1", "ext4"),            # 外接卷：块设备
-        (f"{root}/remote", "user@host:/x", "fuse.sshfs"),  # 远程存储：FUSE
-        (f"{root}/a/b", "/home/host/x", "ext4"),         # 二级挂载点
+        MountInfo(mount_point=f"{root}/影视", root="/home/host/media",
+                  source="/dev/sdb1", fstype="ext4"),
+        MountInfo(mount_point=f"{root}/.hidden", root="/home/host/.h",
+                  source="/dev/sdb1", fstype="ext4"),
+        MountInfo(mount_point=f"{root}/file.txt", root="/home/host/f.txt",
+                  source="/dev/sdb1", fstype="ext4"),
+        MountInfo(mount_point=f"{root}/usb", root="/",
+                  source="/dev/sdb1", fstype="ext4"),            # 外接卷：整盘挂载
+        MountInfo(mount_point=f"{root}/remote", root="/",
+                  source="user@host:/x", fstype="fuse.sshfs"),   # 远程存储：FUSE
+        MountInfo(mount_point=f"{root}/a/b", root="/home/host/x",
+                  source="/dev/sdb1", fstype="ext4"),            # 二级挂载点
     ]
-    monkeypatch.setattr("app.stores.local._proc_mounts", lambda: fake)
+    monkeypatch.setattr("app.stores.local.read_mountinfo", lambda: fake)
 
     mgr = LocalStoreManager(mount_root=root)
     stores = mgr.list_stores()
@@ -268,8 +275,9 @@ def test_local_store_discovery(tmp_path, monkeypatch):
 
 def test_local_store_usage(tmp_path, monkeypatch):
     (tmp_path / "data").mkdir(parents=True)
-    fake = [(str(tmp_path / "data"), "/home/host/data", "ext4")]
-    monkeypatch.setattr("app.stores.local._proc_mounts", lambda: fake)
+    fake = [MountInfo(mount_point=str(tmp_path / "data"), root="/home/host/data",
+                      source="/dev/sdb1", fstype="ext4")]
+    monkeypatch.setattr("app.stores.local.read_mountinfo", lambda: fake)
     mgr = LocalStoreManager(mount_root=tmp_path)
     usage = mgr.usage()
     row = usage["local:data"]
@@ -543,9 +551,10 @@ def _fake_remote_manager():
 
 def _registry(tmp_path, monkeypatch) -> StoreRegistry:
     (tmp_path / "影视").mkdir(parents=True)
-    fake = [(str(tmp_path / "影视"), "/home/host/影视", "ext4")]
+    fake = [MountInfo(mount_point=str(tmp_path / "影视"), root="/home/host/影视",
+                      source="/dev/sdb1", fstype="ext4")]
     if monkeypatch is not None:
-        monkeypatch.setattr("app.stores.local._proc_mounts", lambda: fake)
+        monkeypatch.setattr("app.stores.local.read_mountinfo", lambda: fake)
     return StoreRegistry(
         _fake_external_manager(),
         LocalStoreManager(mount_root=tmp_path),

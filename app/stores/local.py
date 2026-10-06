@@ -1,9 +1,11 @@
-"""本地存储：docker-compose bind 到挂载根（/mnt/usb/<名称>）的宿主机目录。
+"""本地存储：Docker bind 到挂载根（/mnt/usb/<名称>）的宿主机目录。
 
-零配置发现：解析 /proc/mounts，挂载根下源不是块设备、文件系统不是 FUSE
-的一级挂载点即本地存储（Docker bind 的源为宿主机路径），目录名即存储名。
-始终可读写、无状态机、无 API；Docker 持有 bind 引用，任何代码都不得
-umount 这些目录。未做 bind 映射的目录不显示。
+零配置发现：解析 /proc/self/mountinfo，挂载根下一级、root 非 "/"
+的挂载点即本地存储（Docker bind 的 root 是宿主机内子路径；外接卷
+与远程 FUSE 均为整文件系统挂载，root 为 "/"）。注意不能用「源是否
+块设备」区分——bind 在 /proc/mounts 里显示的源恰恰就是块设备名。
+始终可读写、无状态机、无 API；Docker 持有 bind 引用，任何代码都
+不得 umount 这些目录。未做 bind 映射的目录不显示。
 """
 
 from __future__ import annotations
@@ -13,23 +15,9 @@ import os
 from pathlib import Path
 
 from app.config import MOUNT_ROOT
+from app.mounts.commands import read_mountinfo
 
 log = logging.getLogger("stores.local")
-
-
-def _proc_mounts() -> list[tuple[str, str, str]]:
-    """解析 /proc/mounts：[(挂载点, 源, 文件系统类型), ...]。"""
-    rows: list[tuple[str, str, str]] = []
-    with open("/proc/mounts", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            fields = line.split()
-            if len(fields) >= 3:
-                rows.append((
-                    fields[1].replace("\\040", " "),
-                    fields[0].replace("\\040", " "),
-                    fields[2],
-                ))
-    return rows
 
 
 class LocalStoreManager:
@@ -51,21 +39,21 @@ class LocalStoreManager:
         return self.fs_dir(name).is_dir()
 
     def _discover(self) -> list[str]:
-        """发现本地存储：挂载根下源不是块设备、文件系统不是 FUSE 的一级挂载点。"""
+        """发现本地存储：挂载根下一级、mountinfo root 非 "/" 的挂载点（Docker bind）。"""
         prefix = str(self._root)
         names: set[str] = set()
         try:
-            mounts = _proc_mounts()
+            mounts = read_mountinfo()
         except OSError:
             return []
-        for mp, src, fstype in mounts:
-            if not mp.startswith(prefix + "/"):
+        for mi in mounts:
+            if not mi.mount_point.startswith(prefix + "/"):
                 continue
-            rel = mp[len(prefix) + 1:]
+            rel = mi.mount_point[len(prefix) + 1:]
             if not rel or "/" in rel:
                 continue
-            # 外接卷挂载源是块设备（/dev/*），远程存储是 FUSE；都不是本地
-            if src.startswith("/dev/") or fstype.startswith("fuse"):
+            # root 为 "/" 是整文件系统挂载（外接卷 / 远程 FUSE），不是本地
+            if mi.root == "/":
                 continue
             names.add(rel)
         return sorted(names)

@@ -9,8 +9,54 @@ import os
 import re
 import signal
 from pathlib import Path
+from typing import NamedTuple
 
 log = logging.getLogger("mount.cmd")
+
+
+class MountInfo(NamedTuple):
+    """/proc/self/mountinfo 单行：root 是挂载源在文件系统内的路径。
+
+    Docker bind 的本地存储 root 为宿主机内子路径（非 "/"），
+    外接卷与远程 FUSE 均为整文件系统挂载（root 为 "/"）——这是
+    区分两者的可靠依据（/proc/mounts 里 bind 的源显示的就是块设备名）。
+    """
+
+    mount_point: str
+    root: str
+    source: str
+    fstype: str
+
+
+_MOUNT_ESCAPES = (("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\"))
+
+
+def _unescape_mount_field(value: str) -> str:
+    for pat, ch in _MOUNT_ESCAPES:
+        value = value.replace(pat, ch)
+    return value
+
+
+def read_mountinfo() -> list[MountInfo]:
+    """解析 /proc/self/mountinfo，返回 [(挂载点, root, 源, 文件系统类型), ...]。"""
+    rows: list[MountInfo] = []
+    with open("/proc/self/mountinfo", encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            fields = line.split()
+            try:
+                sep = fields.index("-")
+            except ValueError:
+                continue
+            if sep < 5 or len(fields) < sep + 3:
+                continue
+            rows.append(MountInfo(
+                mount_point=_unescape_mount_field(fields[4]),
+                root=_unescape_mount_field(fields[3]),
+                fstype=fields[sep + 1],
+                source=_unescape_mount_field(fields[sep + 2]),
+            ))
+    return rows
+
 
 # blkid 报的类型 -> 挂载驱动
 _DRIVER_MAP = {

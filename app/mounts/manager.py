@@ -38,6 +38,7 @@ from app.mounts.commands import (
     mount_filesystem,
     probe_fstype,
     probe_label,
+    read_mountinfo,
     run_cryptsetup_close,
     run_cryptsetup_open,
     run_dislocker,
@@ -600,29 +601,25 @@ class MountManager:
         await self.cleanup_orphans()
 
     async def cleanup_orphans(self) -> None:
-        """卸载 /proc/mounts 中挂在 /mnt/usb 下、但运行时未跟踪的条目；
-        并关闭上次异常退出残留的 bsbr-* cryptsetup 映射设备。
+        """卸载 /proc/self/mountinfo 中挂在 /mnt/usb 下、但运行时未跟踪的
+        整文件系统挂载（root 为 "/"）；并关闭上次异常退出残留的 bsbr-*
+        cryptsetup 映射设备。
 
-        源不是块设备且文件系统不是 FUSE 的挂载是 Docker bind 进来的
-        本地存储（由 Docker 管理，umount 后容器内映射失效直到重建），
-        不在清理范围。同时清理 WORK_ROOT 下的解密中间层残留，以及
-        /mnt/usb 一级未挂载的空目录（历史 local/、remote/ 包装目录、
-        挂载失败残留）。
+        Docker bind 的本地存储 root 是宿主机内子路径（非 "/"，由 Docker
+        管理，umount 后容器内映射失效直到重建），不在清理范围。同时清理
+        WORK_ROOT 下的解密中间层残留，以及 /mnt/usb 一级未挂载的空目录
+        （历史 local/、remote/ 包装目录、挂载失败残留）。
         """
         try:
-            mounts = await asyncio.to_thread(_read_mount_points)
+            mounts = await asyncio.to_thread(read_mountinfo)
         except OSError:
             mounts = []
         prefix = str(MOUNT_ROOT)
 
-        def _docker_bind(src: str, fstype: str) -> bool:
-            # Docker bind 的本地存储：源为宿主机路径（非块设备）且非 FUSE
-            return not src.startswith("/dev/") and not fstype.startswith("fuse")
-
         targets = sorted(
             (
-                (mp, src, fstype) for mp, src, fstype in mounts
-                if mp.startswith(prefix + "/") and not _docker_bind(src, fstype)
+                (mi.mount_point, mi.source, mi.fstype) for mi in mounts
+                if mi.mount_point.startswith(prefix + "/") and mi.root == "/"
             ),
             key=lambda item: len(item[0]),
             reverse=True,
@@ -669,18 +666,3 @@ class MountManager:
                     await asyncio.to_thread(os.rmdir, entry)
             except OSError:
                 pass
-
-
-def _read_mount_points() -> list[tuple[str, str, str]]:
-    """解析 /proc/mounts，返回 [(挂载点, 源, 文件系统类型), ...]。"""
-    points: list[tuple[str, str, str]] = []
-    with open("/proc/mounts", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
-            fields = line.split()
-            if len(fields) >= 3:
-                points.append((
-                    fields[1].replace("\\040", " "),
-                    fields[0].replace("\\040", " "),
-                    fields[2],
-                ))
-    return points
