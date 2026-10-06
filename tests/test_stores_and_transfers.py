@@ -1,7 +1,7 @@
 """三类存储 + 后台传输增强的单元测试。
 
-覆盖：路径冲突预检、ETA 滑动窗口、本地存储发现、远程存储凭据加解密
-与重名拒绝、统一卷注册表三类 key 查找。
+覆盖：路径冲突预检、目标空间预检、ETA 滑动窗口、本地存储发现、
+远程存储凭据加解密与重名拒绝、统一卷注册表三类 key 查找。
 """
 
 from __future__ import annotations
@@ -18,7 +18,12 @@ from app.models import MountMode
 from app.mounts.commands import MountInfo
 from app.mounts.letters import DriveLetterRegistry
 from app.stores.local import LocalStoreManager
-from app.stores.registry import StoreRegistry, VolumeNotFound, VolumeUnavailable
+from app.stores.registry import (
+    StoreRegistry,
+    VolumeNotFound,
+    VolumeRef,
+    VolumeUnavailable,
+)
 from app.stores.remote import (
     RemoteStoreError,
     RemoteStoreExists,
@@ -613,6 +618,64 @@ def test_registry_mounted_refs_and_usage(tmp_path, monkeypatch):
     usage = asyncio.run(reg.usage())
     assert usage["remote:nas"]["total"] == 2
     assert usage["local:影视"]["total"] > 0
+
+
+# ------------------------------------------------------------ 目标空间预检
+
+
+def test_registry_avail_bytes(tmp_path, monkeypatch):
+    reg = _registry(tmp_path, monkeypatch)
+    # 本地：真实 statvfs，可用空间为正
+    avail = asyncio.run(reg.avail_bytes(reg.lookup("local:影视")))
+    assert avail is not None and avail > 0
+    # 外接挂载点不存在（测试桩）→ statvfs 失败返回 None
+    assert asyncio.run(reg.avail_bytes(reg.lookup("ext-rw"))) is None
+    # 远程：取健康探测缓存
+    assert asyncio.run(reg.avail_bytes(reg.lookup("remote:nas"))) == 1
+    # 远程缓存缺失（刚挂载 / 断网）→ None，调用方跳过预检
+    ghost = VolumeRef(key="remote:ghost", kind="remote", name="ghost",
+                      fs_dir=Path("/mnt/usb/ghost"), sftp_path="Z",
+                      writable=True, ejectable=False)
+    assert asyncio.run(reg.avail_bytes(ghost)) is None
+
+
+async def _scenario_space_precheck(tmp_path):
+    from fastapi import HTTPException
+
+    from app.transfers.api import _ensure_enough_space
+
+    class FakeReg:
+        def __init__(self, avail):
+            self._avail = avail
+
+        async def avail_bytes(self, ref):
+            return self._avail
+
+    ref = SimpleNamespace(name="目标卷")
+
+    big = tmp_path / "big.bin"
+    big.write_bytes(b"\0" * 1024)
+    folder = tmp_path / "d"
+    folder.mkdir()
+    (folder / "a.bin").write_bytes(b"\0" * 600)
+    (folder / "b.bin").write_bytes(b"\0" * 300)
+
+    # 空间充足：放行
+    await _ensure_enough_space(FakeReg(2048), ref, big, skip=False)
+    # 文件夹合计 900 B > 可用 512 B：400 + 友好提示
+    with pytest.raises(HTTPException) as ei:
+        await _ensure_enough_space(FakeReg(512), ref, folder, skip=False)
+    assert ei.value.status_code == 400
+    assert "剩余空间不足" in ei.value.detail
+    assert "900 B" in ei.value.detail and "512 B" in ei.value.detail
+    # 可用空间未知（远程无缓存等）：放行不误拦
+    await _ensure_enough_space(FakeReg(None), ref, big, skip=False)
+    # 同卷移动（原子重命名不占新空间）：跳过
+    await _ensure_enough_space(FakeReg(0), ref, big, skip=True)
+
+
+def test_move_space_precheck(tmp_path):
+    asyncio.run(_scenario_space_precheck(tmp_path))
 
 
 # ------------------------------------------------------------ 传输冲突预检

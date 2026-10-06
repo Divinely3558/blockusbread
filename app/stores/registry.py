@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -185,3 +186,19 @@ class StoreRegistry:
         result.update(local)
         result.update(self._remote.usage_snapshot())
         return result
+
+    async def avail_bytes(self, ref: VolumeRef) -> int | None:
+        """目标卷当前可用字节数（传输前空间预检用）。
+
+        外接 / 本地直接 statvfs 挂载点；远程取健康探测的缓存，
+        缓存缺失（刚挂载、探测未跑、网络断开）时返回 None，
+        由调用方跳过预检——不在请求路径上碰远端，也避免误拦。
+        """
+        if ref.kind == "remote":
+            row = self._remote.usage_snapshot().get(ref.key)
+            return row["avail"] if row else None
+        try:
+            st = await asyncio.to_thread(os.statvfs, ref.fs_dir)
+        except OSError:
+            return None
+        return st.f_bavail * st.f_frsize

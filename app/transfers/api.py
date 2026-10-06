@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from app.stores.registry import VolumeNotFound, VolumeUnavailable
-from app.transfers.jobs import TransferConflict
+from app.stores.registry import VolumeNotFound, VolumeRef, VolumeUnavailable
+from app.transfers.jobs import TransferConflict, scan_tree
 from app.web.api import current_session, get_registry
 from app.web.files import safe_resolve
 
@@ -47,6 +49,37 @@ def _lookup(request: Request, key: str, detail: str):
         raise HTTPException(status_code=404, detail=detail) from exc
     except VolumeUnavailable as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _human_size(n: int) -> str:
+    """字节数转可读文本（与前端 humanSize 规则一致）。"""
+    units = ["B", "KB", "MB", "GB", "TB"]
+    v = float(n)
+    i = 0
+    while v >= 1024 and i < len(units) - 1:
+        v /= 1024
+        i += 1
+    return f"{v:.0f} {units[i]}" if v >= 100 or i == 0 else f"{v:.1f} {units[i]}"
+
+
+async def _ensure_enough_space(
+    registry, dst_ref: VolumeRef, src_abs: Path, *, skip: bool
+) -> None:
+    """目标卷剩余空间预检：待传内容超过可用空间时拒绝创建任务。
+
+    skip=True（同卷移动，原子重命名不占新空间）直接放行；
+    目标可用空间未知（远程无缓存等）也放行，宁漏不误拦。
+    """
+    if skip:
+        return
+    size, _files = await asyncio.to_thread(scan_tree, src_abs)
+    avail = await registry.avail_bytes(dst_ref)
+    if avail is not None and size > avail:
+        raise HTTPException(
+            status_code=400,
+            detail=f"目标存储「{dst_ref.name}」剩余空间不足："
+                   f"需要约 {_human_size(size)}，仅剩 {_human_size(avail)}",
+        )
 
 
 @router.post("/volumes/{key}/move")
@@ -90,6 +123,12 @@ async def create_move(key: str, body: MoveBody, request: Request):
         op = "copy"
     else:
         op = body.mode
+
+    # 空间预检：同卷移动是原子重命名、不占新空间，跳过
+    await _ensure_enough_space(
+        get_registry(request), dst_ref, src_abs,
+        skip=(key == body.destKey and op == "move"),
+    )
 
     try:
         job = await get_transfers(request).submit(

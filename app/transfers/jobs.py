@@ -193,8 +193,8 @@ def _unique_destination(dst_dir: Path, name: str) -> Path:
     raise OSError(17, "无法生成不冲突的目标文件名", name)
 
 
-def _scan_tree(root: Path) -> tuple[int, int]:
-    """统计待复制的总字节与文件数。"""
+def scan_tree(root: Path) -> tuple[int, int]:
+    """统计待复制的总字节与文件数（任务执行与空间预检共用）。"""
     if root.is_file() or root.is_symlink():
         try:
             return root.stat().st_size, 1
@@ -247,7 +247,7 @@ def _do_transfer(job: TransferJob) -> None:
 
     # 跨卷移动/复制、同卷复制：先统计总量
     job.current = "统计文件数…"
-    total_bytes, total_files = _scan_tree(src)
+    total_bytes, total_files = scan_tree(src)
     job.bytes_total = total_bytes
     job.files_total = max(total_files, 1)
 
