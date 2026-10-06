@@ -101,9 +101,9 @@ def test_same_serial_disks_get_unique_ids(monkeypatch):
     disks = scanner.scan()
 
     assert [d.disk_id for d in disks] == ["00A1234567AD-sdc", "00A1234567AD-sdd"]
-    # 分区对象同步携带新 disk_id：挂载目录互不相同
+    # 分区对象同步携带新 disk_id：解锁中间层目录互不相同
     assert all(p.disk_id == d.disk_id for d in disks for p in d.partitions)
-    dirs = {p.mount_dir for d in disks for p in d.partitions}
+    dirs = {p.work_dir for d in disks for p in d.partitions}
     assert len(dirs) == 2
 
 

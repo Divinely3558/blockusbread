@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import enum
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app.config import MOUNT_ROOT
+from app.config import WORK_ROOT
 
 
 class VolumeState(str, enum.Enum):
@@ -57,16 +58,14 @@ class PartitionInfo:
         return self.fstype.lower() in SUPPORTED_FSTYPES
 
     @property
-    def mount_dir(self) -> Path:
-        return MOUNT_ROOT / self.disk_id / f"part{self.number}"
+    def work_dir(self) -> Path:
+        """BitLocker 解锁中间层目录（dislocker FUSE 挂载点），在 SFTP chroot 之外。"""
+        safe = re.sub(r"[^A-Za-z0-9._-]", "-", self.key)
+        return WORK_ROOT / safe
 
     @property
     def dislocker_file(self) -> Path:
-        return self.mount_dir / "dislocker-file"
-
-    @property
-    def fs_dir(self) -> Path:
-        return self.mount_dir / "fs"
+        return self.work_dir / "dislocker-file"
 
     def to_dict(self, runtime: "VolumeRuntime | None" = None, remembered: bool = False) -> dict:
         data = {
@@ -138,8 +137,10 @@ class VolumeRuntime:
     mode: MountMode | None = None
     error: str | None = None
     credential_kind: CredentialKind | None = None  # 当前挂载所用凭据类型（内存，不落明文）
-    mount_dir: str | None = None
-    fs_dir: str | None = None
+    work_dir: str | None = None       # BitLocker 解锁中间层目录（chroot 外，仅 BitLocker 有值）
+    fs_dir: str | None = None         # 可见挂载点：/mnt/usb/<盘符>
+    sftp_path: str | None = None      # SFTP 根下的相对路径（= 盘符）
+    drive: str | None = None          # Windows 风格盘符（C~Z / Aa~Zz，挂载期有效）
     engine: str | None = None         # BitLocker 解锁引擎：dislocker / cryptsetup
     dm_name: str | None = None        # cryptsetup 映射设备名（/dev/mapper/<dm_name>）
 
@@ -149,4 +150,6 @@ class VolumeRuntime:
             "mode": self.mode.value if self.mode else None,
             "error": self.error,
             "mountedPath": self.fs_dir if self.state == VolumeState.MOUNTED else None,
+            "sftpPath": self.sftp_path if self.state == VolumeState.MOUNTED else None,
+            "drive": self.drive if self.state == VolumeState.MOUNTED else None,
         }

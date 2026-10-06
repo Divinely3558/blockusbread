@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -14,7 +16,19 @@ from app.devices import scanner
 from app.events import EventBus
 from app.models import DiskInfo, PartitionInfo, VolumeRuntime, VolumeState
 from app.mounts.commands import MountError
+from app.mounts.letters import DriveLetterRegistry
 from app.mounts.manager import MountManager
+
+# 盘符记录统一写进 pytest 临时目录，测试结束自动清理
+_LETTERS_DIR: Path | None = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _letters_dir(tmp_path_factory):
+    global _LETTERS_DIR
+    _LETTERS_DIR = tmp_path_factory.mktemp("letters")
+    yield
+    _LETTERS_DIR = None
 
 
 def _bitlocker_disk() -> DiskInfo:
@@ -65,7 +79,8 @@ class FakeSecrets:
 
 
 def _make_manager(secrets=None) -> MountManager:
-    mgr = MountManager(EventBus(), secrets)
+    letters = DriveLetterRegistry(path=_LETTERS_DIR / f"{uuid4().hex}.json")
+    mgr = MountManager(EventBus(), secrets, letters)
     disk = _bitlocker_disk()
     mgr._disks = [disk]
     part = disk.partitions[0]

@@ -10,6 +10,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 MOUNT_ROOT = Path(os.getenv("MOUNT_ROOT", "/mnt/usb"))
+# BitLocker 解锁中间层工作目录（dislocker FUSE 挂载点与虚拟文件）：
+# 必须在 MOUNT_ROOT 之外 —— /mnt/usb 是 SFTP chroot 根，只允许出现
+# 已挂载卷；解密中间产物对客户端不可见。
+WORK_ROOT = Path(os.getenv("WORK_ROOT", "/mnt/.vols"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "/app/data"))
 LOG_DIR = DATA_DIR / "logs"
 SECRETS_DATABASE = DATA_DIR / "secrets.db"

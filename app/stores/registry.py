@@ -68,7 +68,7 @@ class StoreRegistry:
             kind="local",
             name=name,
             fs_dir=self._local.fs_dir(name),
-            sftp_path=f"local/{name}",
+            sftp_path=name,
             writable=True,
             ejectable=False,
         )
@@ -93,12 +93,13 @@ class StoreRegistry:
     def _external_ref(self, key: str) -> VolumeRef:
         part, runtime = self._manager.mounted_partition(key)
         writable = runtime.mode == MountMode.RW
+        label = part.label or f"分区 {part.number}"
         return VolumeRef(
             key=part.key,
             kind="external",
-            name=part.label or f"分区 {part.number}",
-            fs_dir=part.fs_dir,
-            sftp_path=f"{part.disk_id}/part{part.number}/fs",
+            name=f"{runtime.drive}:{label}" if runtime.drive else label,
+            fs_dir=Path(runtime.fs_dir),
+            sftp_path=runtime.sftp_path or "",
             writable=writable,
             ejectable=True,
             device=runtime.device,
@@ -145,12 +146,13 @@ class StoreRegistry:
         """三类存储当前可用的全部卷（速率统计、容量汇总用）。"""
         refs: list[VolumeRef] = []
         for part, runtime in self._manager.mounted_volumes():
+            label = part.label or f"分区 {part.number}"
             refs.append(VolumeRef(
                 key=part.key,
                 kind="external",
-                name=part.label or f"分区 {part.number}",
-                fs_dir=part.fs_dir,
-                sftp_path=f"{part.disk_id}/part{part.number}/fs",
+                name=f"{runtime.drive}:{label}" if runtime.drive else label,
+                fs_dir=Path(runtime.fs_dir),
+                sftp_path=runtime.sftp_path or "",
                 writable=runtime.mode == MountMode.RW,
                 ejectable=True,
                 device=runtime.device,

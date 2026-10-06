@@ -1,8 +1,9 @@
 """远程存储：sshfs (FUSE) 挂载远程 SFTP 目录为统一卷。
 
-- 按「远程组」组织：同组（组名相同，组名留空默认取用户名）下可挂载
-  多个远端路径，挂载点为 <mount_root>/remote/<组名>/<路径名>，
-  SFTP 暴露路径 sftpPath 形如 remote/<组名>/<路径名>。
+- 按「远程组」组织：同组（组名留空默认取用户名）下可挂载多个远端路径；
+  挂载点平铺在挂载根下，以 Windows 风格盘符命名（C~Z 用完接 Aa~Zz，
+  见 app.mounts.letters），SFTP 暴露路径 sftpPath 即该盘符，删除挂载时
+  盘符释放回收。
 - 每个挂载以唯一 id 标识，key 形如 remote:<id>；组名仅作展示与分组。
 - 凭据（密码 / SSH 私钥 PEM）经 SECRET_KEY 派生的 Fernet 加密存 SQLite；
   私钥挂载时解密写入 data/remote_keys/<id>（0600）。
@@ -16,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import os
 import sqlite3
@@ -37,6 +37,7 @@ from app.mounts.commands import (
     _safe_env,
     run_cmd_capture,
 )
+from app.mounts.letters import DriveLetterRegistry
 
 log = logging.getLogger("stores.remote")
 
@@ -138,15 +139,17 @@ class RemoteStoreManager:
         self,
         bus: EventBus,
         fernet_key: bytes | None,
+        letters: DriveLetterRegistry,
         data_dir: Path = DATA_DIR,
         mount_root: Path = MOUNT_ROOT,
     ) -> None:
         self._bus = bus
         self._fernet = Fernet(fernet_key) if fernet_key else None
+        self._letters = letters
         self._db_path = data_dir / "remote_stores.db"
         self._key_dir = data_dir / "remote_keys"
         self._known_hosts = data_dir / "ssh" / "known_hosts_remote"
-        self._root = mount_root / "remote"
+        self._root = mount_root
         self._db_lock = threading.Lock()
         self._conn: sqlite3.Connection | None = None
         self._ops_lock = asyncio.Lock()
@@ -170,36 +173,13 @@ class RemoteStoreManager:
     def root(self) -> Path:
         return self._root
 
-    @staticmethod
-    def _path_slug(remote_path: str) -> str:
-        """把远端绝对路径转成挂载子目录名：/WD-123/a b -> WD-123_a_b。"""
-        s = (remote_path or "/").strip().strip("/") or "root"
-        s = s.replace("/", "_")
-        cleaned = "".join(
-            c if (c.isalnum() or c in "._-") and not c.isspace() else "_"
-            for c in s
-        ).lstrip(".").strip("_-") or "root"
-        return cleaned[:64]
+    def _mount_dir(self, store: RemoteStoreConfig) -> Path:
+        """解析挂载点：根目录下以持久记忆的盘符命名（/mnt/usb/<盘符>）。
 
-    def _subdir_map(self, stores: list[RemoteStoreConfig]) -> dict[str, str]:
-        """为每个挂载计算组内子目录名；slug 撞名时追加路径哈希保证唯一。"""
-        used: set[tuple[str, str]] = set()
-        out: dict[str, str] = {}
-        for st in sorted(stores, key=lambda s: (s.created_at, s.id)):
-            slug = self._path_slug(st.remote_path)
-            if (st.name, slug) in used:
-                digest = hashlib.sha1(st.remote_path.encode("utf-8")).hexdigest()[:6]
-                slug = f"{slug}-{digest}"
-            used.add((st.name, slug))
-            out[st.id] = slug
-        return out
-
-    def _mount_dir(
-        self, store: RemoteStoreConfig, subdir_map: dict[str, str] | None = None
-    ) -> Path:
-        if subdir_map is None:
-            subdir_map = self._subdir_map(self._load_all())
-        return self._root / store.name / subdir_map[store.id]
+        盘符在首次挂载时分配并永久记忆，之后稳定不变。
+        """
+        letter = self._letters.allocate(store.key)
+        return self._root / letter
 
     def fs_dir(self, key: str) -> Path:
         """按 key（remote:<id>）解析真实挂载目录（registry / 文件 API 使用）。"""
@@ -403,10 +383,11 @@ class RemoteStoreManager:
         if not self.enabled:
             return []
         stores = self._load_all()
-        subdir_map = self._subdir_map(stores)
         out = []
         for store in stores:
             state = self._states.get(store.id, {"state": "mounting", "error": None})
+            # 盘符在首次挂载时分配；未挂载过的新配置无盘符
+            drive = self._letters.letter_of(store.key)
             out.append({
                 "key": store.key,
                 "name": store.name,
@@ -417,7 +398,8 @@ class RemoteStoreManager:
                 "state": state.get("state", "mounting"),
                 "error": state.get("error"),
                 "mode": "rw",
-                "sftpPath": f"remote/{store.name}/{subdir_map[store.id]}",
+                "drive": drive,
+                "sftpPath": drive or "",
             })
         return out
 
@@ -502,10 +484,16 @@ class RemoteStoreManager:
             self._set_state(store.id, "mounted")
             log.info("远程存储 %s:%s 挂载成功", store.name, store.remote_path)
             await self._refresh_usage(store)
+            await self._publish("remote")
+            return
+        # 挂载失败：清掉未生效的挂载点目录，避免空目录出现在 SFTP 根下
+        if not await asyncio.to_thread(os.path.ismount, mp):
+            with contextlib.suppress(OSError):
+                await asyncio.to_thread(os.rmdir, mp)
         await self._publish("remote")
 
     async def _lazy_unmount(self, store: RemoteStoreConfig) -> None:
-        """惰性卸载挂载点（重连/删除前的残留清理），幂等。"""
+        """惰性卸载挂载点（重连/删除/停止前的清理），幂等。"""
         mp = self._mount_dir(store)
         if await asyncio.to_thread(os.path.ismount, mp):
             rc, _, _ = await run_cmd_capture(
@@ -637,6 +625,8 @@ class RemoteStoreManager:
                 (self._key_dir / store.id).unlink(missing_ok=True)
             self._states.pop(store.id, None)
             self._usage.pop(store.key, None)
+            # 盘符随挂载配置一起删除，回收复用
+            self._letters.release(store.key)
         log.info("已删除远程挂载 %s:%s（远端文件不受影响）",
                  store.name, store.remote_path)
         await self._publish("remote")
@@ -669,12 +659,11 @@ class RemoteStoreManager:
                 log.exception("远程存储健康探测异常")
 
     async def _probe_once(self) -> None:
-        subdir_map = self._subdir_map(self._load_all())
         for store in self._load_all():
             state = self._states.get(store.id, {}).get("state")
             if state not in ("mounted", "error"):
                 continue   # mounting 由挂载流程自行收敛
-            mp = self._mount_dir(store, subdir_map)
+            mp = self._mount_dir(store)
 
             def _probe_path() -> None:
                 # 必须先确认确实是挂载点：挂载失败后残留的普通目录

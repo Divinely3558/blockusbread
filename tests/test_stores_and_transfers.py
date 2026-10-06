@@ -15,6 +15,7 @@ import pytest
 from cryptography.fernet import Fernet
 
 from app.models import MountMode
+from app.mounts.letters import DriveLetterRegistry
 from app.stores.local import LocalStoreManager
 from app.stores.registry import StoreRegistry, VolumeNotFound, VolumeUnavailable
 from app.stores.remote import (
@@ -237,25 +238,38 @@ def test_eta_none_without_total():
 # ------------------------------------------------------------ 本地存储
 
 
-def test_local_store_discovery(tmp_path):
-    root = tmp_path / "local"
+def test_local_store_discovery(tmp_path, monkeypatch):
+    root = tmp_path / "mnt"
     (root / "影视").mkdir(parents=True)
     (root / ".hidden").mkdir()
     (root / "file.txt").write_text("x", encoding="utf-8")
 
-    mgr = LocalStoreManager(mount_root=tmp_path)
+    # 模拟 /proc/mounts：只有 Docker bind 的一级目录算本地存储
+    fake = [
+        (f"{root}/影视", "/home/host/media", "ext4"),
+        (f"{root}/.hidden", "/home/host/.h", "ext4"),
+        (f"{root}/file.txt", "/home/host/f.txt", "ext4"),
+        (f"{root}/usb", "/dev/sdb1", "ext4"),            # 外接卷：块设备
+        (f"{root}/remote", "user@host:/x", "fuse.sshfs"),  # 远程存储：FUSE
+        (f"{root}/a/b", "/home/host/x", "ext4"),         # 二级挂载点
+    ]
+    monkeypatch.setattr("app.stores.local._proc_mounts", lambda: fake)
+
+    mgr = LocalStoreManager(mount_root=root)
     stores = mgr.list_stores()
     assert [s["name"] for s in stores] == ["影视"]
     assert stores[0]["key"] == "local:影视"
     assert stores[0]["mode"] == "rw"
-    assert stores[0]["sftpPath"] == "local/影视"
+    assert stores[0]["sftpPath"] == "影视"
     assert mgr.exists("影视") is True
     assert mgr.exists("不存在") is False
     assert mgr.fs_dir("影视") == root / "影视"
 
 
-def test_local_store_usage(tmp_path):
-    (tmp_path / "local" / "data").mkdir(parents=True)
+def test_local_store_usage(tmp_path, monkeypatch):
+    (tmp_path / "data").mkdir(parents=True)
+    fake = [(str(tmp_path / "data"), "/home/host/data", "ext4")]
+    monkeypatch.setattr("app.stores.local._proc_mounts", lambda: fake)
     mgr = LocalStoreManager(mount_root=tmp_path)
     usage = mgr.usage()
     row = usage["local:data"]
@@ -289,6 +303,7 @@ def _make_remote(tmp_path, key=_fernet_key()) -> RemoteStoreManager:
     return RemoteStoreManager(
         bus=_AsyncBus(),
         fernet_key=key,
+        letters=DriveLetterRegistry(path=tmp_path / "data" / "drive_letters.json"),
         data_dir=tmp_path / "data",
         mount_root=tmp_path / "mnt",
     )
@@ -324,7 +339,9 @@ def test_remote_group_defaults_to_username(no_sshfs, tmp_path):
         remote_path="/data", auth_mode="password", secret="p",
     ))
     assert row["name"] == "alice"
-    assert row["sftpPath"] == f"remote/alice/{row['remotePath'].strip('/').replace('/', '_')}"
+    # 挂载点以盘符命名：首次分配 C，远端路径不再进入 SFTP 目录名
+    assert row["drive"] == "C"
+    assert row["sftpPath"] == "C"
 
 
 def test_remote_duplicate_rejected(no_sshfs, tmp_path):
@@ -354,8 +371,9 @@ def test_remote_duplicate_rejected(no_sshfs, tmp_path):
         rows = mgr.list_stores()
         assert len(rows) == 3
         assert len({r["key"] for r in rows}) == 3   # key 按挂载唯一
+        # 三个挂载依次分配 C、D、E 盘符，同名路径不再靠哈希后缀区分
         sftp = {r["sftpPath"] for r in rows}
-        assert sftp == {"remote/nas/root", "remote/nas/x", "remote/nas2/root"}
+        assert sftp == {"C", "D", "E"}
 
     asyncio.run(scenario())
 
@@ -388,7 +406,9 @@ def test_remote_migrate_v1_schema(no_sshfs, tmp_path):
     rows = mgr.list_stores()
     assert len(rows) == 1
     assert rows[0]["key"] == "remote:nas"          # 老记录 id == name，key 不变
-    assert rows[0]["sftpPath"] == "remote/nas/vol1"
+    # 老库迁移后还没挂载过：尚无盘符
+    assert rows[0]["drive"] is None
+    assert rows[0]["sftpPath"] == ""
     # 迁移后同组可再挂载不同路径（唯一约束已解除）
     asyncio.run(mgr.create(
         group="nas", host="h", port=22, username="u",
@@ -413,7 +433,8 @@ def test_remote_list_and_roundtrip(no_sshfs, tmp_path):
         assert rows[0]["name"] == "nas"
         assert rows[0]["host"] == "10.0.0.2"
         assert rows[0]["port"] == 2022
-        assert rows[0]["sftpPath"] == "remote/nas/vol1"
+        assert rows[0]["drive"] == "C"
+        assert rows[0]["sftpPath"] == "C"
         # store_snapshot 按 key 取回
         assert mgr.store_snapshot(rows[0]["key"])["remotePath"] == "/vol1"
 
@@ -467,16 +488,17 @@ def test_remote_mount_command_password_stdin(no_sshfs, tmp_path):
 
 
 def _fake_external_manager():
-    part_rw = SimpleNamespace(
-        key="ext-rw", label="视频盘", number=1,
-        fs_dir=Path("/mnt/usb/ext-rw-p1/fs"), disk_id="EXT1",
+    # 挂载点平铺后 fs_dir/sftp_path/drive 记录在运行时（VolumeRuntime）上
+    runtime_rw = SimpleNamespace(
+        mode=MountMode.RW, device="/dev/sdz1",
+        fs_dir=Path("/mnt/usb/C"), sftp_path="C", drive="C",
     )
-    part_ro = SimpleNamespace(
-        key="ext-ro", label=None, number=2,
-        fs_dir=Path("/mnt/usb/EXT1-p2/fs"), disk_id="EXT1",
+    runtime_ro = SimpleNamespace(
+        mode=MountMode.RO, device="/dev/sdz2",
+        fs_dir=Path("/mnt/usb/D"), sftp_path="D", drive="D",
     )
-    runtime_rw = SimpleNamespace(mode=MountMode.RW, device="/dev/sdz1")
-    runtime_ro = SimpleNamespace(mode=MountMode.RO, device="/dev/sdz2")
+    part_rw = SimpleNamespace(key="ext-rw", label="视频盘", number=1, disk_id="EXT1")
+    part_ro = SimpleNamespace(key="ext-ro", label=None, number=2, disk_id="EXT1")
 
     class FakeManager:
         def snapshot(self):
@@ -504,14 +526,14 @@ def _fake_remote_manager():
             return [
                 {"key": "remote:nas", "name": "nas", "host": "h", "port": 22,
                  "username": "u", "remotePath": "/", "state": "mounted",
-                 "error": None, "mode": "rw", "sftpPath": "remote/nas/root"},
+                 "error": None, "mode": "rw", "drive": "E", "sftpPath": "E"},
                 {"key": "remote:bad", "name": "bad", "host": "h", "port": 22,
                  "username": "u", "remotePath": "/", "state": "error",
-                 "error": "x", "mode": "rw", "sftpPath": "remote/bad/root"},
+                 "error": "x", "mode": "rw", "drive": "F", "sftpPath": "F"},
             ]
 
         def fs_dir(self, key):
-            return Path(f"/mnt/usb/remote/{key.split(':', 1)[1]}")
+            return Path(f"/mnt/usb/{key.split(':', 1)[1]}")
 
         def usage_snapshot(self):
             return {"remote:nas": {"total": 2, "used": 1, "avail": 1}}
@@ -519,8 +541,11 @@ def _fake_remote_manager():
     return FakeRemote()
 
 
-def _registry(tmp_path) -> StoreRegistry:
-    (tmp_path / "local" / "影视").mkdir(parents=True)
+def _registry(tmp_path, monkeypatch) -> StoreRegistry:
+    (tmp_path / "影视").mkdir(parents=True)
+    fake = [(str(tmp_path / "影视"), "/home/host/影视", "ext4")]
+    if monkeypatch is not None:
+        monkeypatch.setattr("app.stores.local._proc_mounts", lambda: fake)
     return StoreRegistry(
         _fake_external_manager(),
         LocalStoreManager(mount_root=tmp_path),
@@ -528,17 +553,17 @@ def _registry(tmp_path) -> StoreRegistry:
     )
 
 
-def test_registry_lookup_local(tmp_path):
-    ref = _registry(tmp_path).lookup("local:影视")
+def test_registry_lookup_local(tmp_path, monkeypatch):
+    ref = _registry(tmp_path, monkeypatch).lookup("local:影视")
     assert ref.kind == "local"
     assert ref.writable is True
     assert ref.ejectable is False
-    assert ref.fs_dir == tmp_path / "local" / "影视"
-    assert ref.sftp_path == "local/影视"
+    assert ref.fs_dir == tmp_path / "影视"
+    assert ref.sftp_path == "影视"
 
 
-def test_registry_lookup_external(tmp_path):
-    reg = _registry(tmp_path)
+def test_registry_lookup_external(tmp_path, monkeypatch):
+    reg = _registry(tmp_path, monkeypatch)
     rw = reg.lookup("ext-rw")
     assert rw.writable is True and rw.kind == "external" and rw.ejectable is True
     ro = reg.lookup("ext-ro")
@@ -547,13 +572,13 @@ def test_registry_lookup_external(tmp_path):
         reg.lookup("ext-none")
 
 
-def test_registry_lookup_remote(tmp_path):
-    reg = _registry(tmp_path)
+def test_registry_lookup_remote(tmp_path, monkeypatch):
+    reg = _registry(tmp_path, monkeypatch)
     ref = reg.lookup("remote:nas")
     assert ref.kind == "remote" and ref.writable is True
     assert ref.name == "nas:/"          # 展示名 = 组名:远端路径
-    assert ref.fs_dir == Path("/mnt/usb/remote/nas")
-    assert ref.sftp_path == "remote/nas/root"
+    assert ref.fs_dir == Path("/mnt/usb/nas")
+    assert ref.sftp_path == "E"
     # 错误状态的远程卷：存在但不可用
     with pytest.raises(VolumeUnavailable):
         reg.lookup("remote:bad")
@@ -562,17 +587,17 @@ def test_registry_lookup_remote(tmp_path):
         reg.lookup("remote:ghost")
 
 
-def test_registry_name_of_fallback(tmp_path):
-    reg = _registry(tmp_path)
-    assert reg.name_of("ext-rw") == "视频盘"
-    assert reg.name_of("local:影视") == "影视"
+def test_registry_name_of_fallback(tmp_path, monkeypatch):
+    reg = _registry(tmp_path, monkeypatch)
+    assert reg.name_of("ext-rw") == "C:视频盘"   # 外接展示名 = 盘符:卷标
+    assert reg.name_of("local:影视") == "影视"   # 本地不加盘符
     assert reg.name_of("remote:nas") == "nas:/"
     # 不可用卷也给出可读名
     assert reg.name_of("remote:bad") == "bad:/"
 
 
-def test_registry_mounted_refs_and_usage(tmp_path):
-    reg = _registry(tmp_path)
+def test_registry_mounted_refs_and_usage(tmp_path, monkeypatch):
+    reg = _registry(tmp_path, monkeypatch)
     refs = reg.mounted_refs()
     keys = {r.key for r in refs}
     assert keys == {"ext-rw", "ext-ro", "local:影视", "remote:nas"}

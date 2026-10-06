@@ -223,7 +223,7 @@ function renderShareBanner() {
       <code class="pw-mask" title="密码已隐藏，点右侧按钮可复制">${"•".repeat(Math.max(8, String(s.password).length))}</code>
       <button class="btn mini js-copy" data-copy="${esc(s.password)}" data-label="密码">复制密码</button>
     </div>
-    <div class="banner-sub">挂载后的每个卷对应 SFTP 子目录：外接存储 &lt;磁盘ID&gt;/part&lt;序号&gt;/fs、本地存储 local/&lt;名称&gt;、远程存储 remote/&lt;组名&gt;/&lt;路径名&gt;；Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，手机播放器（VLC 等）可直接添加 SFTP；密码即网页登录密码，页面不显示明文</div>`;
+    <div class="banner-sub">挂载后的每个卷直接出现在 SFTP 根目录（以卷标命名，无卷标用盘 ID，重名自动加 -2、-3；未挂载的卷不显示）；Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，手机播放器（VLC 等）可直接添加 SFTP；密码即网页登录密码，页面不显示明文</div>`;
   banner.hidden = false;
 }
 
@@ -440,6 +440,7 @@ function speedMeterHtml(key) {
 }
 
 function sftpLineHtml(sftp) {
+  if (!sftp) return "";
   return `<div class="sftp-line"><span class="sftp-ic"><i class="ic ic-folder"></i></span><button class="sftp-copy js-copy" data-copy="${esc(sftp)}" data-label="SFTP 路径" title="点击复制路径"><code>${esc(sftp)}</code></button></div>`;
 }
 
@@ -522,7 +523,7 @@ function renderRemoteRow(v) {
     <div class="part-row state-${stateCls}">
       <div class="part-main">
         <div class="part-info">
-          <div class="part-name"><span class="tag fs">远程</span> ${esc(v.remotePath)}</div>
+          <div class="part-name"><span class="tag fs">远程</span> ${esc(v.drive ? `${v.drive}:${v.remotePath}` : v.remotePath)}</div>
         </div>
         <div class="part-actions">
           ${v.state === "mounted" ? usageBarHtml(v.key) : ""}
@@ -646,7 +647,9 @@ function renderPartition(p) {
     p.fstype && !p.bitlocker ? `<span class="tag fs">${esc(p.fstype.toUpperCase())}</span>` : "",
   ].join(" ");
 
-  const title = `${esc(p.label || `分区 ${p.number}`)} · ${humanSize(p.size)}
+  // 已挂载的分区标题带盘符（D:卷标 / D:分区 N），未挂载仅卷标
+  const label = p.label || `分区 ${p.number}`;
+  const title = `${esc(p.drive ? `${p.drive}:${label}` : label)} · ${humanSize(p.size)}
     <span class="desktop-only">· ${esc(p.path)}</span>`;
 
   return `
@@ -675,7 +678,7 @@ function renderActions(p) {
     return `<span class="tag busy"><i class="ic ic-loader ic-spin"></i>处理中…</span>`;
   }
   if (p.state === "mounted") {
-    const sftp = sftpUrl(p);
+    const sftp = p.sftpPath ? sftpUrlFor(p.sftpPath) : null;
     return `
       <span class="tag ${p.mode === "rw" ? "rw" : "ro"}">
         ${p.mode === "rw" ? "读写模式" : "只读模式"}
@@ -770,7 +773,7 @@ function sftpUrlFor(sub) {
 }
 
 function sftpUrl(p) {
-  return sftpUrlFor(`${p.diskId}/part${p.number}/fs`);
+  return p.sftpPath ? sftpUrlFor(p.sftpPath) : null;
 }
 
 // ------------------------------------------------------------ 操作
@@ -929,11 +932,15 @@ function rawUrl(key, path, download) {
 function findVolume(key) {
   if (key.startsWith("local:")) {
     const v = (state.local || []).find((x) => x.key === key);
-    return v ? { name: v.name } : null;
+    return v ? { name: v.name, drive: null } : null;
   }
   if (key.startsWith("remote:")) {
     const v = (state.remote || []).find((x) => x.key === key);
-    return v ? { name: `${v.name}:${v.remotePath}` } : null;
+    if (!v) return null;
+    return {
+      name: `${v.drive ? `${v.drive}:` : ""}${v.remotePath}`,
+      drive: v.drive || null,
+    };
   }
   for (const d of state.disks) {
     const p = d.partitions.find((x) => x.key === key);
@@ -946,7 +953,7 @@ function volumeDisplayName(key) {
   const found = findVolume(key);
   if (!found) return key;
   if (found.part) {
-    return found.part.label || `${found.disk.displayName} · 分区 ${found.part.number}`;
+    return volumeLabel(found.part, found.disk);
   }
   return found.name || key;
 }
@@ -1051,8 +1058,12 @@ function writableTargets() {
   }
   for (const v of state.remote || []) {
     if (v.state === "mounted") {
-      // 同组多个挂载同名，补远端路径区分
-      out.push({ key: v.key, label: `${v.name}:${v.remotePath}`, group: "远程存储" });
+      // 盘符:远端路径（无盘符时回退组名），组内多个挂载靠路径区分
+      out.push({
+        key: v.key,
+        label: v.drive ? `${v.drive}:${v.remotePath}` : `${v.name}:${v.remotePath}`,
+        group: "远程存储",
+      });
     }
   }
   return out;
@@ -1181,14 +1192,19 @@ const moveState = {
 const jobsState = { jobs: [] };
 
 function volumeLabel(part, disk) {
-  return part.label || `${disk.displayName || disk.id} · 分区 ${part.number}`;
+  const label = part.label || `${disk.displayName || disk.id} · 分区 ${part.number}`;
+  return part.drive ? `${part.drive}:${label}` : label;
 }
 
-// 磁盘卡片标题：优先显示分区卷标（不带盘符；多分区块不同卷标时用 " / " 连接），
+// 磁盘卡片标题：已挂载分区显示「盘符:卷标」（多分区块不同卷标用 " / " 连接），
 // 无任何卷标时回退厂商+型号，仍缺失则保持内核设备名（sdc / sdb）
 function diskTitle(disk) {
   const labels = [...new Set((disk.partitions || [])
-    .map(p => (p.label || "").trim())
+    .map(p => {
+      const label = (p.label || "").trim();
+      if (!label) return "";
+      return p.state === "mounted" && p.drive ? `${p.drive}:${label}` : label;
+    })
     .filter(Boolean))];
   return labels.length ? labels.join(" / ") : (disk.displayName || disk.name);
 }
@@ -1437,7 +1453,7 @@ function renderJobs() {
           ${j.status === "running" ? `<span class="job-rate">${humanRate(j.rateBps)}</span>` : ""}
           <span class="${tagCls}">${opLabel} · ${statusText}</span>
         </div>
-        <div class="job-route" title="${esc(`${shortKey(j.srcKey)}/${j.srcPath || ""} → ${shortKey(j.dstKey)}/${j.dstPath || ""}`)}">${esc(folderName(j.srcPath, shortKey(j.srcKey)))}<i class="ic ic-arrow-right"></i>${esc(folderName(j.dstPath, shortKey(j.dstKey)))}</div>
+        <div class="job-route" title="${esc(`${shortKey(j.srcKey)}/${j.srcPath || ""} → ${shortKey(j.dstKey)}/${j.dstPath || ""}`)}">${esc(routeLabel(j.srcKey, j.srcPath))}<i class="ic ic-arrow-right"></i>${esc(routeLabel(j.dstKey, j.dstPath))}</div>
         ${j.status === "running" || j.status === "queued" ? `
           <div class="job-track"><div class="job-fill" style="width:${pct}%"></div></div>
           <div class="job-foot">
@@ -1450,19 +1466,23 @@ function renderJobs() {
 }
 
 function shortKey(key) {
-  // local:<名> / remote:<名> 直接取名称；外接 key 截断避免路由行过长
+  // 卷的可读名（带盘符）：local:<名> / remote:<盘符:路径> / 外接「盘符:卷标」
+  if (findVolume(key)) return volumeDisplayName(key);
   const m = key.match(/^(local|remote):(.+)$/);
   if (m) return m[2];
   // FC30383E5705D-p1 -> FC30…D-p1
   return key.length > 14 ? `${key.slice(0, 6)}…${key.slice(-4)}` : key;
 }
 
-function folderName(path, fallback) {
-  // 取路径最后一段作为文件夹名（A→B 式路由行）；根目录（空路径）回退卷名
+function routeLabel(key, path) {
+  // 路由行单侧标签：「盘符:文件夹名」；根目录（空路径）回退卷名（已带盘符）
   const clean = (path || "").replace(/\/+$/, "");
-  if (!clean) return fallback;
+  if (!clean) return shortKey(key);
   const i = clean.lastIndexOf("/");
-  return i === -1 ? clean : clean.slice(i + 1);
+  const name = i === -1 ? clean : clean.slice(i + 1);
+  const found = findVolume(key);
+  const drive = found ? (found.part ? found.part.drive : found.drive) : null;
+  return drive ? `${drive}:${name}` : name;
 }
 
 function openJobs(load = true) {

@@ -153,6 +153,21 @@ async def probe_fstype(target: Path) -> str:
     return stdout.decode("ascii", "ignore").strip().lower()
 
 
+async def probe_label(target: Path) -> str:
+    """探测目标（解密映射设备 / dislocker 虚拟文件）上的文件系统卷标。
+
+    BitLocker 把卷标连同元数据一起加密，原分区上永远读不到；解锁后的
+    明文目标上才有真实卷标。读不到（探测失败/无卷标）返回空串。
+    """
+    try:
+        stdout, _ = await run_cmd(
+            ["blkid", "-p", "-s", "LABEL", "-o", "value", str(target)], timeout=20
+        )
+    except MountError:
+        return ""
+    return stdout.decode("utf-8", "replace").strip()
+
+
 async def warm_up_device(device: str) -> None:
     """直读设备头部，强制 USB 硬盘盒唤醒休眠中的盘体。
 

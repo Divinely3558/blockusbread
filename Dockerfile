@@ -67,8 +67,9 @@ WORKDIR /app
 COPY --from=builder /app/.venv /app/.venv
 COPY . .
 
-# SFTP 共享根目录（local/ 本地存储、remote/ 远程存储挂载点）、sshd 特权分离目录与应用数据目录
-RUN mkdir -p /mnt/usb/local /mnt/usb/remote /run/sshd /app/data/logs
+# SFTP 共享根目录与 BitLocker 解密中间层目录（/mnt/.vols，chroot 之外客户端不可见）、
+# sshd 特权分离目录与应用数据目录
+RUN mkdir -p /mnt/usb /mnt/.vols /run/sshd /app/data/logs
 
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \

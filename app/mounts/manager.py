@@ -1,4 +1,11 @@
-"""挂载编排器：设备重扫、BitLocker 解锁、普通分区挂载、安全弹出、拔出清理。"""
+"""挂载编排器：设备重扫、BitLocker 解锁、普通分区挂载、安全弹出、拔出清理。
+
+挂载点全部平铺在 /mnt/usb 根下：每个已挂载卷以「Windows 风格盘符」
+（C~Z，用完接 Aa~Zz，见 app.mounts.letters）命名出现在 SFTP 根目录，
+盘符按卷 key 持久记忆，重插拔/重启不变。网页显示「盘符:卷标」区分同名卷标。
+未挂载的卷不产生任何可见目录。BitLocker 解密的中间产物（dislocker FUSE
+挂载点与虚拟文件）放在 chroot 之外的 WORK_ROOT，SFTP 客户端不可见。
+"""
 
 from __future__ import annotations
 
@@ -11,7 +18,7 @@ import shutil
 from pathlib import Path
 
 from app import secrets_store
-from app.config import MOUNT_ROOT
+from app.config import MOUNT_ROOT, WORK_ROOT
 from app.devices import scanner
 from app.events import EventBus
 from app.models import (
@@ -30,12 +37,14 @@ from app.mounts.commands import (
     kill_fuse_daemons,
     mount_filesystem,
     probe_fstype,
+    probe_label,
     run_cryptsetup_close,
     run_cryptsetup_open,
     run_dislocker,
     umount_filesystem,
     warm_up_device,
 )
+from app.mounts.letters import DriveLettersExhausted, DriveLetterRegistry
 
 log = logging.getLogger("mount.manager")
 
@@ -49,9 +58,11 @@ class MountManager:
         self,
         bus: EventBus,
         secrets: secrets_store.SecretsStore | None,
+        letters: DriveLetterRegistry,
     ) -> None:
         self._bus = bus
         self._secrets = secrets
+        self._letters = letters
         self._disks: list[DiskInfo] = []
         self._volumes: dict[str, VolumeRuntime] = {}
         self._volume_locks: dict[str, asyncio.Lock] = {}
@@ -124,6 +135,22 @@ class MountManager:
 
     async def _notify(self, reason: str) -> None:
         await self._bus.publish("state", {"reason": reason})
+
+    # ------------------------------------------------------------------ 挂载点命名
+
+    async def _allocate_mount_dir(self, key: str) -> tuple[str, Path]:
+        """按盘符注册表分配卷的挂载点：/mnt/usb/<盘符>。
+
+        盘符按卷 key 持久记忆（重插拔不变）；字母池耗尽转成 MountError。
+        返回 (盘符, 挂载点路径)。
+        """
+        try:
+            letter = self._letters.allocate(key)
+        except DriveLettersExhausted as exc:
+            raise MountError(str(exc)) from None
+        mount_point = MOUNT_ROOT / letter
+        await asyncio.to_thread(mount_point.mkdir, parents=True, exist_ok=True)
+        return letter, mount_point
 
     # ------------------------------------------------------------------ 扫描
 
@@ -210,7 +237,9 @@ class MountManager:
                 rt.state = VolumeState.ERROR
                 rt.error = str(exc)
                 log.info("%s 解锁 %s (%s) 失败：%s", actor, part.path, key, exc)
-                await self._partial_cleanup(part.mount_dir, rt)
+                await self._partial_cleanup(
+                    Path(rt.fs_dir) if rt.fs_dir else None, part.work_dir, rt
+                )
                 rt.engine = None
                 await self._notify("unlock-failed")
                 raise
@@ -253,7 +282,9 @@ class MountManager:
             except MountError as exc:
                 last_exc = exc
                 log.warning("卷 %s 第 %d 次解锁尝试失败：%s", part.path, attempt, exc)
-                await self._partial_cleanup(part.mount_dir, rt)
+                await self._partial_cleanup(
+                    Path(rt.fs_dir) if rt.fs_dir else None, part.work_dir, rt
+                )
                 rt.engine = None
                 if attempt == 1:
                     await asyncio.sleep(2)
@@ -269,6 +300,9 @@ class MountManager:
         writable: bool,
     ) -> None:
         readonly = not writable
+
+        # 解密中间层固定在 chroot 之外的 WORK_ROOT/<key>，SFTP 不可见
+        rt.work_dir = str(part.work_dir)
 
         # 优先 cryptsetup（内核 bitlk，秒级完成，不受部分 USB 硬盘盒下
         # dislocker/FUSE 挂死问题影响）；
@@ -295,27 +329,35 @@ class MountManager:
                 secret=secret,
                 kind=kind,
                 readonly=readonly,
-                mount_dir=part.mount_dir,
+                mount_dir=part.work_dir,
             )
             rt.engine = "dislocker"
             target = part.dislocker_file
         rt.credential_kind = CredentialKind(kind)
-        rt.mount_dir = str(part.mount_dir)
 
         inner = await probe_fstype(target)
         log.debug("卷 %s 内层文件系统：%s（引擎 %s）", part.path, inner or "未知", rt.engine)
 
+        # BitLocker 把卷标连同元数据一起加密，解锁后的明文目标上才有真实卷标；
+        # 探测不到回退盘 ID。挂载名在挂载时定死，挂载期内不再变化。
+        label = await probe_label(target)
+
         rt.state = VolumeState.MOUNTING
         await self._notify("mounting")
+        # 挂载点以持久记忆的盘符命名（/mnt/usb/<盘符>），与卷标解耦：
+        # 网页用「盘符:卷标」展示，SFTP 根下只出现盘符
+        letter, mount_point = await self._allocate_mount_dir(part.key)
+        rt.fs_dir = str(mount_point)
+        rt.sftp_path = letter
+        rt.drive = letter
         await mount_filesystem(
             target=target,
             fstype=inner,
             readonly=readonly,
-            mount_point=part.fs_dir,
+            mount_point=mount_point,
         )
         rt.state = VolumeState.MOUNTED
         rt.mode = MountMode.RW if writable else MountMode.RO
-        rt.fs_dir = str(part.fs_dir)
 
     # ------------------------------------------------------------------ 普通挂载
 
@@ -334,24 +376,29 @@ class MountManager:
             try:
                 rt.state = VolumeState.MOUNTING
                 await self._notify("mounting")
+                # 挂载点以持久记忆的盘符命名（/mnt/usb/<盘符>）
+                letter, mount_point = await self._allocate_mount_dir(part.key)
+                rt.fs_dir = str(mount_point)
+                rt.sftp_path = letter
+                rt.drive = letter
                 await mount_filesystem(
                     target=Path(part.path),
                     fstype=part.fstype,
                     readonly=not writable,
-                    mount_point=part.fs_dir,
+                    mount_point=mount_point,
                 )
             except MountError as exc:
                 rt.state = VolumeState.ERROR
                 rt.error = str(exc)
                 log.info("%s 挂载 %s (%s) 失败：%s", actor, part.path, key, exc)
-                await self._partial_cleanup(part.mount_dir, rt)
+                await self._partial_cleanup(
+                    Path(rt.fs_dir) if rt.fs_dir else None, None, rt
+                )
                 rt.engine = None
                 await self._notify("mount-failed")
                 raise
             rt.state = VolumeState.MOUNTED
             rt.mode = MountMode.RW if writable else MountMode.RO
-            rt.fs_dir = str(part.fs_dir)
-            rt.mount_dir = str(part.mount_dir)
             log.info("%s 挂载 %s (%s, %s) 成功", actor, part.path, key,
                      "rw" if writable else "ro")
             await self._notify("mounted")
@@ -363,18 +410,18 @@ class MountManager:
         async with self._lock_for(key):
             rt = self._volumes[key]
             # 以内核挂载实况为准（状态机可能因上次失败停在中间态）
-            live = await asyncio.to_thread(os.path.ismount, part.fs_dir)
+            live = bool(rt.fs_dir) and await asyncio.to_thread(
+                os.path.ismount, rt.fs_dir
+            )
             if not live:
                 # 挂载已不在：清理可能残留的 FUSE 守护进程/dm 映射/目录后复位，
                 # 不允许“假成功”——状态必须与内核实况一致
                 if part.bitlocker:
                     with contextlib.suppress(MountError):
-                        await self._teardown_bitlocker(rt, part.mount_dir, lazy=True)
-                await self._remove_dirs(part.mount_dir, ignore_errors=True)
+                        await self._teardown_bitlocker(rt, rt.work_dir, lazy=True)
+                await self._partial_cleanup(*self._rt_paths(rt), rt)
                 rt.state = VolumeState.PRESENT
                 rt.mode = None
-                rt.fs_dir = None
-                rt.mount_dir = None
                 rt.credential_kind = None
                 rt.error = None
                 # 弹出后保持锁定；重新插拔或手动解锁后才再次可用
@@ -396,8 +443,6 @@ class MountManager:
                 raise
             rt.state = VolumeState.PRESENT
             rt.mode = None
-            rt.fs_dir = None
-            rt.mount_dir = None
             rt.credential_kind = None
             rt.error = None
             # 弹出后保持锁定；重新插拔或手动解锁后才再次可用
@@ -432,19 +477,28 @@ class MountManager:
         rt.state = VolumeState.UNMOUNTING
         await self._notify("unmounting")
         # 安全弹出（非 lazy）时先驱逐 SFTP 客户端等占用者；惰性路径直接卸载
-        await umount_filesystem(part.fs_dir, lazy=lazy, evict=not lazy)
+        fs_dir = Path(rt.fs_dir) if rt.fs_dir else None
+        if fs_dir is not None:
+            await umount_filesystem(fs_dir, lazy=lazy, evict=not lazy)
         if part.bitlocker:
-            await self._teardown_bitlocker(rt, part.mount_dir, lazy)
-        await self._remove_dirs(part.mount_dir)
+            await self._teardown_bitlocker(rt, rt.work_dir, lazy)
+        # 挂载点/工作目录必须删除，否则空目录会残留在 SFTP 根下
+        for target in (fs_dir, Path(rt.work_dir) if rt.work_dir else None):
+            if target is not None:
+                await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+        rt.fs_dir = None
+        rt.sftp_path = None
+        rt.drive = None
+        rt.work_dir = None
 
     async def _teardown_bitlocker(
-        self, rt: VolumeRuntime, mount_dir: Path, lazy: bool
+        self, rt: VolumeRuntime, work_dir: str | None, lazy: bool
     ) -> None:
         """按解锁引擎清理：dislocker 卸 FUSE 挂载点，cryptsetup 关映射设备。"""
         if rt.engine == "cryptsetup" and rt.dm_name:
             # 前台型 FUSE 守护进程卸载后可能仍持有 dm 块设备，
             # 不关进程 cryptsetup close 会 EBUSY
-            await kill_fuse_daemons(rt.dm_name, str(mount_dir / "fs"))
+            await kill_fuse_daemons(rt.dm_name, work_dir or "")
             try:
                 await run_cryptsetup_close(rt.dm_name)
             except MountError:
@@ -452,25 +506,49 @@ class MountManager:
                     raise
                 log.warning("关闭映射设备 %s 失败（设备可能已拔出）", rt.dm_name)
             rt.dm_name = None
-        else:
-            await umount_filesystem(mount_dir, lazy=lazy)
+        elif work_dir:
+            await umount_filesystem(Path(work_dir), lazy=lazy)
 
-    async def _partial_cleanup(self, mount_dir, rt: VolumeRuntime | None = None) -> None:
-        """操作失败后的半成品清理：全部惰性卸载并删除目录，忽略错误。"""
-        fs_dir = mount_dir / "fs"
-        for target in (fs_dir, mount_dir):
-            try:
-                await umount_filesystem(target, lazy=True)
-            except MountError:
-                pass
+    @staticmethod
+    def _rt_paths(rt: VolumeRuntime) -> tuple[Path | None, Path | None]:
+        """运行时记录的（挂载点, 工作目录），用于失败后的半成品清理。"""
+        fs_dir = Path(rt.fs_dir) if rt.fs_dir else None
+        work_dir = Path(rt.work_dir) if rt.work_dir else None
+        return fs_dir, work_dir
+
+    async def _partial_cleanup(
+        self,
+        fs_dir: Path | None,
+        work_dir: Path | None,
+        rt: VolumeRuntime | None = None,
+    ) -> None:
+        """操作失败后的半成品清理：全部惰性卸载并删除目录，忽略错误。
+
+        传入运行时 rt 时一并关闭 dm 映射，并复位其路径字段。
+        """
+        for target in (fs_dir, work_dir):
+            if target is not None:
+                try:
+                    await umount_filesystem(target, lazy=True)
+                except MountError:
+                    pass
         if rt is not None and rt.dm_name:
-            await kill_fuse_daemons(rt.dm_name, str(fs_dir), str(mount_dir))
+            await kill_fuse_daemons(
+                rt.dm_name, str(fs_dir or ""), str(work_dir or "")
+            )
             try:
                 await run_cryptsetup_close(rt.dm_name)
             except MountError:
                 pass
             rt.dm_name = None
-        await self._remove_dirs(mount_dir, ignore_errors=True)
+        for target in (fs_dir, work_dir):
+            if target is not None:
+                await asyncio.to_thread(shutil.rmtree, target, ignore_errors=True)
+        if rt is not None:
+            rt.fs_dir = None
+            rt.sftp_path = None
+            rt.drive = None
+            rt.work_dir = None
 
     async def _cleanup_removed(self, rt: VolumeRuntime) -> None:
         """设备已拔出：文件系统与解密层全部惰性卸载，清除状态。"""
@@ -480,17 +558,23 @@ class MountManager:
         )
         log.warning("检测到卷拔出 %s，自动清理残留挂载", rt.device)
         if part is not None:
-            await self._partial_cleanup(part.mount_dir, rt)
+            await self._partial_cleanup(
+                Path(rt.fs_dir) if rt.fs_dir else None,
+                part.work_dir if part.bitlocker else None,
+                rt,
+            )
         else:
             # 分区信息也没了，至少尝试按记录的路径清理
-            if rt.fs_dir:
-                await umount_filesystem(Path(rt.fs_dir), lazy=True)
-            if rt.mount_dir:
-                await umount_filesystem(Path(rt.mount_dir), lazy=True)
+            for recorded in self._rt_paths(rt):
+                if recorded is None:
+                    continue
+                try:
+                    await umount_filesystem(recorded, lazy=True)
+                except MountError:
+                    pass
+                await asyncio.to_thread(shutil.rmtree, recorded, ignore_errors=True)
             if rt.dm_name:
-                await kill_fuse_daemons(
-                    rt.dm_name, rt.fs_dir or "", rt.mount_dir or ""
-                )
+                await kill_fuse_daemons(rt.dm_name, rt.fs_dir or "", rt.work_dir or "")
                 try:
                     await run_cryptsetup_close(rt.dm_name)
                 except MountError:
@@ -519,29 +603,44 @@ class MountManager:
         """卸载 /proc/mounts 中挂在 /mnt/usb 下、但运行时未跟踪的条目；
         并关闭上次异常退出残留的 bsbr-* cryptsetup 映射设备。
 
-        /mnt/usb/local/*（Docker 管理，umount 后容器内映射失效直到重建）
-        与 /mnt/usb/remote/*（远程存储管理器负责）不在此清理范围内。
+        源不是块设备且文件系统不是 FUSE 的挂载是 Docker bind 进来的
+        本地存储（由 Docker 管理，umount 后容器内映射失效直到重建），
+        不在清理范围。同时清理 WORK_ROOT 下的解密中间层残留，以及
+        /mnt/usb 一级未挂载的空目录（历史 local/、remote/ 包装目录、
+        挂载失败残留）。
         """
         try:
-            proc_mounts = await asyncio.to_thread(_read_mount_points)
+            mounts = await asyncio.to_thread(_read_mount_points)
         except OSError:
-            return
+            mounts = []
         prefix = str(MOUNT_ROOT)
 
-        def _protected(mp: str) -> bool:
-            local = f"{prefix}/local"
-            remote = f"{prefix}/remote"
-            return mp == local or mp.startswith(local + "/") \
-                or mp == remote or mp.startswith(remote + "/")
+        def _docker_bind(src: str, fstype: str) -> bool:
+            # Docker bind 的本地存储：源为宿主机路径（非块设备）且非 FUSE
+            return not src.startswith("/dev/") and not fstype.startswith("fuse")
 
         targets = sorted(
-            (mp for mp in proc_mounts
-             if mp.startswith(prefix + "/") and not _protected(mp)),
-            key=len,
+            (
+                (mp, src, fstype) for mp, src, fstype in mounts
+                if mp.startswith(prefix + "/") and not _docker_bind(src, fstype)
+            ),
+            key=lambda item: len(item[0]),
             reverse=True,
         )
-        for mp in targets:
+        for mp, _src, _fstype in targets:
             await umount_filesystem(Path(mp), lazy=True)
+
+        # WORK_ROOT 下的解密中间层：残留 FUSE 挂载先卸载，再整体删除
+        try:
+            work_items = list(WORK_ROOT.iterdir())
+        except OSError:
+            work_items = []
+        for item in work_items:
+            if await asyncio.to_thread(os.path.ismount, item):
+                with contextlib.suppress(MountError):
+                    await umount_filesystem(item, lazy=True)
+            await asyncio.to_thread(shutil.rmtree, item, ignore_errors=True)
+
         mapper = Path("/dev/mapper")
         try:
             orphans = [p.name for p in mapper.glob("bsbr-*")]
@@ -554,25 +653,34 @@ class MountManager:
             except MountError:
                 pass
 
-    @staticmethod
-    async def _remove_dirs(mount_dir, ignore_errors: bool = False) -> None:
-        """删除挂载目录及其可能的空父目录（盘级目录）。"""
-        await asyncio.to_thread(shutil.rmtree, mount_dir, ignore_errors=ignore_errors)
+        # SFTP 根只显示已挂载卷：一级空目录（非挂载点）一律清除，
+        # 保证「未挂载的卷不可见」
         try:
-            # 尝试删除空盘目录（如 /mnt/usb/<disk_id>/）
-            await asyncio.to_thread(
-                lambda: os.rmdir(mount_dir.parent)
-                if mount_dir.parent.exists() and not any(mount_dir.parent.iterdir()) else None
-            )
+            entries = list(MOUNT_ROOT.iterdir())
         except OSError:
-            pass
+            entries = []
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    continue
+                if await asyncio.to_thread(os.path.ismount, entry):
+                    continue
+                if not any(entry.iterdir()):
+                    await asyncio.to_thread(os.rmdir, entry)
+            except OSError:
+                pass
 
 
-def _read_mount_points() -> list[str]:
-    points: list[str] = []
+def _read_mount_points() -> list[tuple[str, str, str]]:
+    """解析 /proc/mounts，返回 [(挂载点, 源, 文件系统类型), ...]。"""
+    points: list[tuple[str, str, str]] = []
     with open("/proc/mounts", encoding="utf-8", errors="replace") as fh:
         for line in fh:
             fields = line.split()
-            if len(fields) >= 2:
-                points.append(fields[1].replace("\\040", " "))
+            if len(fields) >= 3:
+                points.append((
+                    fields[1].replace("\\040", " "),
+                    fields[0].replace("\\040", " "),
+                    fields[2],
+                ))
     return points

@@ -15,6 +15,7 @@ from app import __version__, config
 from app.devices.monitor import UdevMonitor
 from app.events import EventBus
 from app.log import setup_logging
+from app.mounts.letters import POOL, DriveLetterRegistry
 from app.mounts.manager import MountManager
 from app.mounts.stats import SpeedMonitor
 from app.secrets_store import SecretsStore
@@ -53,11 +54,13 @@ async def lifespan(app: FastAPI):
     bus = EventBus()
     sessions = SessionStore(settings.session_signing_key)
     login_limiter = LoginRateLimiter()
-    manager = MountManager(bus=bus, secrets=secrets)
+    letters = DriveLetterRegistry()
+    manager = MountManager(bus=bus, secrets=secrets, letters=letters)
     local_stores = LocalStoreManager()
     remote_stores = RemoteStoreManager(
         bus=bus,
         fernet_key=settings.fernet_key if settings.remember_enabled else None,
+        letters=letters,
     )
     registry = StoreRegistry(manager=manager, local=local_stores, remote=remote_stores)
     speeds = SpeedMonitor(registry)
@@ -87,8 +90,15 @@ async def lifespan(app: FastAPI):
     # 传输速率采样（按已挂载卷，2 秒一期）
     await speeds.start()
 
+    # 本地映射目录名恰为盘符形态时预占该盘符，避免外接卷/远程挂载
+    # 被分配到同一路径造成挂载遮蔽
+    for row in local_stores.list_stores():
+        name = row["name"]
+        if name in POOL and not letters.reserve(row["key"], name):
+            log.warning("本地存储目录 %s 与已分配盘符冲突，存在挂载遮蔽风险", name)
+
     # 清理上次异常退出可能残留的挂载与 cryptsetup 映射设备
-    # （/mnt/usb/local 与 /mnt/usb/remote 子树由 Docker / 远程管理器负责，不清理）
+    # （Docker bind 的本地存储由 Docker 管理，不在清理范围）
     await manager.cleanup_orphans()
 
     # 启动前先做一次全量扫描与状态重建（记住的凭据不自动挂载，解锁需手动点击）
