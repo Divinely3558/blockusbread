@@ -138,7 +138,6 @@ class VolumeRuntime:
     mode: MountMode | None = None
     error: str | None = None
     credential_kind: CredentialKind | None = None  # 当前挂载所用凭据类型（内存，不落明文）
-    auto_unlock_tried: bool = False
     mount_dir: str | None = None
     fs_dir: str | None = None
     engine: str | None = None         # BitLocker 解锁引擎：dislocker / cryptsetup

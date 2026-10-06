@@ -66,7 +66,8 @@ class LoginBody(BaseModel):
 
 class UnlockBody(BaseModel):
     kind: str = Field(default="password", pattern="^(password|recovery)$")
-    secret: str = Field(min_length=1, max_length=512)
+    # secret 留空 = 使用该卷已保存的凭据解锁（免输密码）
+    secret: str = Field(default="", max_length=512)
     writable: bool = False
     remember: bool = False
 

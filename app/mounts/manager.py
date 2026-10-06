@@ -128,7 +128,10 @@ class MountManager:
     # ------------------------------------------------------------------ 扫描
 
     async def rescan(self, reason: str = "scan") -> None:
-        """重新扫描设备：清理拔出的卷、登记新卷、自动解锁已记住凭据的卷。"""
+        """重新扫描设备：清理拔出的卷、登记新卷。
+
+        已记住的凭据只用于手动解锁时免输密码，绝不自动解锁挂载。
+        """
         async with self._scan_lock:
             try:
                 disks = await asyncio.to_thread(scanner.scan)
@@ -157,29 +160,6 @@ class MountManager:
             for key in [k for k in self._volumes if k not in present]:
                 await self._cleanup_removed(self._volumes[key])
 
-            # 自动解锁（本次出现周期内只尝试一次）
-            for key, part in present.items():
-                rt = self._volumes[key]
-                if (
-                    self._secrets is not None
-                    and not rt.auto_unlock_tried
-                    and rt.state == VolumeState.PRESENT
-                ):
-                    rt.auto_unlock_tried = True
-                    saved = self._secrets.load(key)
-                    if saved is not None:
-                        kind, secret, mode = saved
-                        log.info("卷 %s 存在已保存凭据，尝试自动解锁", part.path)
-                        try:
-                            await self._unlock_locked(
-                                part, kind, secret, mode == MountMode.RW.value,
-                                actor="system",
-                            )
-                        except MountError as exc:
-                            rt.state = VolumeState.ERROR
-                            rt.error = str(exc)
-                            log.warning("卷 %s 自动解锁失败：%s", part.path, exc)
-
             # 只有对外快照真的变化时才推送：定时兜底扫描与无关 uevent
             # （NAS 上 md/loop/dm 的 block change）不会再引起前端重绘
             sig = json.dumps(
@@ -204,12 +184,21 @@ class MountManager:
         part = self._partition(key)
         if not part.bitlocker:
             raise MountError("该分区不是 BitLocker 卷")
-        if kind not in {CredentialKind.PASSWORD.value, CredentialKind.RECOVERY.value}:
-            raise MountError("凭据类型无效")
+
+        # secret 留空 = 用已保存凭据解锁（免输密码）；没有已保存凭据则必须输入
         if not secret:
-            raise MountError("请输入密码或恢复密钥")
-        if remember and self._secrets is None:
-            raise MountError("未设置 SECRET_KEY，记忆功能不可用")
+            if self._secrets is None:
+                raise MountError("未设置 SECRET_KEY，记忆功能不可用")
+            saved = self._secrets.load(key)
+            if saved is None:
+                raise MountError("该卷没有已保存的凭据，请输入密码或恢复密钥")
+            kind, secret, _ = saved
+            remember = False
+        else:
+            if kind not in {CredentialKind.PASSWORD.value, CredentialKind.RECOVERY.value}:
+                raise MountError("凭据类型无效")
+            if remember and self._secrets is None:
+                raise MountError("未设置 SECRET_KEY，记忆功能不可用")
 
         async with self._lock_for(key):
             rt = self._volumes[key]
@@ -388,8 +377,7 @@ class MountManager:
                 rt.mount_dir = None
                 rt.credential_kind = None
                 rt.error = None
-                # 软弹出后卷仍在线：允许已保存凭据下次自动解锁再次尝试
-                rt.auto_unlock_tried = False
+                # 弹出后保持锁定；重新插拔或手动解锁后才再次可用
                 log.info("%s 安全弹出卷 %s (%s)（挂载已不存在，完成残留清理）",
                          actor, part.path, key)
                 await self._notify("ejected")
@@ -412,8 +400,7 @@ class MountManager:
             rt.mount_dir = None
             rt.credential_kind = None
             rt.error = None
-            # 软弹出后卷仍在线：重置自动解锁标记，已保存凭据下次可再次自动解锁
-            rt.auto_unlock_tried = False
+            # 弹出后保持锁定；重新插拔或手动解锁后才再次可用
             log.info("%s 安全弹出卷 %s (%s)", actor, part.path, key)
             await self._notify("ejected")
 

@@ -8,10 +8,14 @@ import re
 import subprocess
 from collections import Counter
 from dataclasses import replace
+from pathlib import Path
 
 from app.models import DiskInfo, PartitionInfo
+from app.mounts.commands import dm_name_for
 
 log = logging.getLogger("scanner")
+
+_MAPPER_DIR = Path("/dev/mapper")
 
 _LSBLK_COLUMNS = (
     "NAME,SIZE,TYPE,FSTYPE,LABEL,UUID,PARTUUID,SERIAL,MODEL,VENDOR,TRAN,RM,HOTPLUG"
@@ -66,6 +70,15 @@ def _partition_number(name: str) -> int:
     return int(match.group(1)) if match else 0
 
 
+def _mapper_label(vol_key: str) -> str:
+    """BitLocker 卷解锁后从 bsbr-* 映射设备补读卷标；未解锁时映射不存在，返回空。
+
+    BitLocker 把卷标连同元数据一起加密，原分区上 blkid 只见 BitLocker 签名、
+    永远读不到 LABEL；cryptsetup 解锁生成的明文映射上才是真实 NTFS 卷标。
+    """
+    return _probe_partition(str(_MAPPER_DIR / dm_name_for(vol_key))).get("LABEL") or ""
+
+
 def scan() -> list[DiskInfo]:
     """返回当前所有 USB/可热插拔磁盘及其分区。同步方法，调用方请放线程池。"""
     out = _run(["lsblk", "-J", "-b", "-p", "-o", _LSBLK_COLUMNS])
@@ -108,6 +121,13 @@ def scan() -> list[DiskInfo]:
             partuuid = probe.get("PARTUUID") or str(child.get("partuuid") or "")
             bitlocker = fstype.strip().lower() == "bitlocker"
 
+            # BitLocker 卷标在原分区上加密不可见；卷已解锁时从 bsbr-* 映射补读
+            if bitlocker:
+                number = _partition_number(part_name)
+                mapper_label = _mapper_label(partuuid or uuid or f"{disk_id}-p{number}")
+                if mapper_label:
+                    label = mapper_label
+
             partitions.append(
                 PartitionInfo(
                     disk_id=disk_id,
@@ -131,6 +151,11 @@ def scan() -> list[DiskInfo]:
             fstype = probe.get("TYPE") or dev_fstype
             uuid = probe.get("UUID") or str(dev.get("uuid") or "")
             label = probe.get("LABEL") or str(dev.get("label") or "")
+            bitlocker = fstype.strip().lower() == "bitlocker"
+            if bitlocker:
+                mapper_label = _mapper_label(uuid or f"{disk_id}-p1")
+                if mapper_label:
+                    label = mapper_label
             partitions.append(
                 PartitionInfo(
                     disk_id=disk_id,
@@ -142,7 +167,7 @@ def scan() -> list[DiskInfo]:
                     label=label,
                     uuid=uuid,
                     partuuid="",
-                    bitlocker=fstype.strip().lower() == "bitlocker",
+                    bitlocker=bitlocker,
                 )
             )
 

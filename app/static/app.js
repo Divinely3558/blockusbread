@@ -705,6 +705,20 @@ function renderActionPanel(p) {
   if (!p.supported) return "";
 
   if (p.bitlocker) {
+    if (p.remembered) {
+      // 已记住凭据：免输密码，一键解锁挂载（不自动挂载，仍需手动点击）
+      return `
+      <div class="unlock-panel">
+        <div class="unlock-options">
+          <label class="checkline">
+            <input type="checkbox" class="rw-check">
+            以读写模式解锁（默认只读；写入 BitLocker/NTFS 存在损坏风险）
+          </label>
+        </div>
+        <button class="btn primary unlock-submit"
+                onclick="unlockVolume('${esc(p.key)}')"><i class="ic ic-unlock"></i>解锁并挂载（已记住凭据，免输密码）</button>
+      </div>`;
+    }
     return `
       <div class="unlock-panel">
         <div class="seg" role="tablist">
@@ -725,7 +739,7 @@ function renderActionPanel(p) {
             <input type="checkbox" class="remember-check"
                    ${state.rememberEnabled ? "" : "disabled"}>
             记住此卷（${state.rememberEnabled
-              ? "凭据加密保存，插入/重启后自动解锁"
+              ? "凭据加密保存，下次解锁免输密码"
               : "需设置 SECRET_KEY"}）
           </label>
         </div>
@@ -777,11 +791,17 @@ function switchKind(key, kind) {
 
 async function unlockVolume(key) {
   const row = rowOf(key);
-  const kind = row.querySelector(".seg button.active").dataset.kind;
-  const secret = row.querySelector(".cred-input").value.trim();
+  const found = findVolume(key);
+  const remembered = !!(found && found.part && found.part.remembered);
   const writable = row.querySelector(".rw-check").checked;
-  const remember = row.querySelector(".remember-check").checked;
-  if (!secret) { toast("请先输入密码或恢复密钥", "err"); return; }
+  let kind = "password", secret = "", remember = false;
+  if (!remembered) {
+    kind = row.querySelector(".seg button.active").dataset.kind;
+    secret = row.querySelector(".cred-input").value.trim();
+    remember = row.querySelector(".remember-check").checked;
+    if (!secret) { toast("请先输入密码或恢复密钥", "err"); return; }
+  }
+  // 已记住凭据：secret 留空，后端自动使用已保存凭据（免输密码）
   if (writable && !window.confirm(
     "读写模式通过第三方工具链（dislocker + NTFS-3G）写入 BitLocker 卷，\n" +
     "存在数据损坏风险。确认以读写模式解锁吗？"
@@ -832,7 +852,7 @@ async function ejectDisk(id) {
 }
 
 async function forgetCredential(key) {
-  if (!window.confirm("删除已保存的解锁凭据？之后重新插入将需要手动输入。")) return;
+  if (!window.confirm("删除已保存的解锁凭据？之后解锁需重新输入密码。")) return;
   try {
     await api("DELETE", `/api/volumes/${encodeURIComponent(key)}/credential`);
     toast("已忘记该卷的凭据");

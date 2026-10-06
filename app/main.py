@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
     # （/mnt/usb/local 与 /mnt/usb/remote 子树由 Docker / 远程管理器负责，不清理）
     await manager.cleanup_orphans()
 
-    # 启动前先做一次全量扫描与状态重建（含已记住凭据卷的自动解锁）
+    # 启动前先做一次全量扫描与状态重建（记住的凭据不自动挂载，解锁需手动点击）
     await manager.rescan("startup")
 
     # 远程存储：按保存的配置自动重连 + 健康探测

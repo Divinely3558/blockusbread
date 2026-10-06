@@ -118,3 +118,56 @@ def test_scan_hotplug_sata_bridge_treated_as_external(monkeypatch):
     disks = scanner.scan()
     assert len(disks) == 1
     assert disks[0].disk_id == "BRIDGE1"
+
+
+def test_bitlocker_label_read_from_unlocked_mapper(monkeypatch, tmp_path):
+    """BitLocker 卷标加密在原分区上读不到；卷解锁后应从 bsbr-* 映射设备
+    补读真实 NTFS 卷标（映射名 = bsbr- + partuuid），未解锁时保持为空。"""
+    payload = json.dumps(
+        {
+            "blockdevices": [
+                {
+                    "name": "/dev/sdc", "size": 1_000_204_886_016, "type": "disk",
+                    "fstype": None, "label": None, "uuid": None, "partuuid": None,
+                    "serial": "00A1234567AD", "model": "Enclosure", "vendor": "USB",
+                    "tran": "usb", "rm": True, "hotplug": True,
+                    "children": [{
+                        "name": "/dev/sdc1", "size": 1_000_204_886_016, "type": "part",
+                        "fstype": "bitlocker", "label": None,
+                        "uuid": None, "partuuid": "pu-sdc1",
+                    }],
+                }
+            ]
+        }
+    )
+    blkid_results = {
+        # 原分区：BitLocker 签名，永远没有 LABEL
+        "/dev/sdc1": "DEVNAME=/dev/sdc1\nTYPE=BitLocker\nPARTUUID=pu-sdc1\n",
+    }
+
+    def fake_run(cmd: list[str], timeout: int = 20) -> str:
+        if cmd[0] == "lsblk":
+            return payload
+        if cmd[0] == "blkid":
+            return blkid_results.get(cmd[-1], "")
+        raise AssertionError(f"未预期的命令：{cmd}")
+
+    monkeypatch.setattr(scanner, "_run", fake_run)
+    monkeypatch.setattr(scanner, "_MAPPER_DIR", tmp_path)
+
+    # 未解锁：映射设备不存在，探测不到卷标
+    disks = scanner.scan()
+    part = disks[0].partitions[0]
+    assert part.bitlocker is True
+    assert part.label == ""
+
+    # 解锁后：/dev/mapper/bsbr-pu-sdc1 出现，卷标 Gotten 可读
+    blkid_results[str(tmp_path / "bsbr-pu-sdc1")] = (
+        "DEVNAME=dummy\nTYPE=ntfs\nLABEL=Gotten\nUUID=u-ntfs\n"
+    )
+    disks = scanner.scan()
+    part = disks[0].partitions[0]
+    assert part.label == "Gotten"
+    # 类型徽标仍按原分区（BitLocker）显示，不被映射设备的 ntfs 覆盖
+    assert part.fstype == "BitLocker"
+    assert part.bitlocker is True

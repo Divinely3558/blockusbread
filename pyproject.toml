@@ -1,6 +1,6 @@
 [project]
 name = "blockusbread"
-version = "1.0.0"
+version = "1.1.0"
 description = "在 Docker 中解密挂载 BitLocker USB 硬盘，并通过 SFTP 共享读取"
 readme = "README.md"
 requires-python = ">=3.13"
