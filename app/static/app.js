@@ -718,8 +718,13 @@ function renderActionPanel(p) {
             以读写模式解锁（默认只读；写入 BitLocker/NTFS 存在损坏风险）
           </label>
         </div>
-        <button class="btn primary unlock-submit"
-                onclick="unlockVolume('${esc(p.key)}')"><i class="ic ic-unlock"></i>解锁并挂载（已记住凭据，免输密码）</button>
+        <div class="unlock-actions">
+          <button class="btn primary unlock-submit"
+                  onclick="unlockVolume('${esc(p.key)}')"><i class="ic ic-unlock"></i>解锁并挂载（已记住凭据，免输密码）</button>
+          <button class="btn ghost" onclick="forgetCredential('${esc(p.key)}')">
+            <i class="ic ic-edit"></i>忘记凭据，重新输入密码
+          </button>
+        </div>
       </div>`;
     }
     return `
