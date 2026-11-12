@@ -28,6 +28,7 @@ docker-compose.yml
 
 # 测试 / CI / 部署配置 / IDE 文档（仅宿主机或构建期使用，不进运行镜像）
 tests/
+.pytest-tmp/
 .github/
 deploy/
 .trae/

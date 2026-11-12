@@ -27,4 +27,8 @@ select = ["E", "F", "I"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q"
+# basetemp 必须显式指定：默认值取 TMPDIR，而某些环境（比如 CLI 会话把 TMPDIR
+# 指到 /run/user/1000 这类 784M tmpfs）会被传输测试的 big.bin 直接撑爆，测试卡死
+# 且报 ENOSPC。相对路径按调用目录解析，所以在仓库根目录跑（testpaths 也是这么假设的）。
+# 想回收空间：rm -rf .pytest-tmp
+addopts = "-q --basetemp=.pytest-tmp"

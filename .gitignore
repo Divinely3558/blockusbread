@@ -25,6 +25,7 @@ data-test/
 
 # 临时 / 测试素材目录（不入库）
 .test/
+.pytest-tmp/
 tmp/
 temp/
 
