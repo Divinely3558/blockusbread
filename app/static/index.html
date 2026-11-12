@@ -3,25 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>BlockUSBRead · 磁盘管理</title>
   <link rel="stylesheet" href="/static/styles.css">
   <link rel="icon" type="image/svg+xml" href="/static/icons/favicon.svg">
 </head>
 <body>
 
-<!-- 环境光斑装饰 -->
-<div class="ambient-orb ambient-orb-1"></div>
-<div class="ambient-orb ambient-orb-2"></div>
-<div class="ambient-orb ambient-orb-3"></div>
-
-<!-- 登录页 -->
+<!-- ============================================================ 登录 -->
 <div id="login" hidden>
   <form id="login-form" class="login-card">
     <div class="login-brand">
       <img class="logo-img logo-img-lg" src="/static/icons/logo.svg" alt="BlockUSBRead">
       <h1>BlockUSBRead</h1>
     </div>
-    <div id="login-error" class="wrong" hidden></div>
+    <div id="login-error" class="callout danger" hidden role="alert"></div>
     <label class="field">
       <span>账号</span>
       <input id="login-username" type="text" autocomplete="username" placeholder="请输入账号" required>
@@ -30,255 +26,331 @@
       <span>密码</span>
       <input id="login-password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
     </label>
-    <button class="btn primary block" type="submit">
-      <span>登 录</span>
-    </button>
+    <button class="btn primary block" type="submit"><span>登 录</span></button>
     <p class="login-version">v<span id="login-version">…</span></p>
   </form>
 </div>
 
-<!-- 主界面 -->
-<div id="app" hidden>
-  <header class="topbar">
-    <div class="topbar-inner">
-      <div class="brand">
-        <img class="logo-img" src="/static/icons/logo.svg" alt="">
-        <span class="brand-text">BlockUSBRead</span>
-      </div>
-      <nav class="topnav">
-        <button class="btn ghost" id="btn-jobs" title="后台文件传输任务" hidden>
-          <i class="ic ic-move"></i><span class="jobs-label">传输</span>
-          <span id="jobs-badge" class="jobs-badge" hidden>0</span>
-        </button>
-        <button class="btn ghost" id="btn-remote" title="挂载远程 SFTP 存储" hidden>
-          <i class="ic ic-network"></i><span class="jobs-label">挂载远程存储</span>
-        </button>
-        <button class="btn ghost" id="btn-refresh" title="重新扫描设备"><i class="ic ic-refresh"></i>刷新设备</button>
-        <button class="btn danger" id="btn-logout">退出</button>
-      </nav>
-    </div>
-  </header>
+<!-- ============================================================ 外壳 -->
+<div id="shell" hidden>
 
-  <main class="container">
-    <div id="global-banner" class="banner" hidden></div>
-    <div id="share-banner" class="banner info" hidden></div>
-    <div id="sessions-bar" class="sessions-bar" hidden>
-      <button class="sessions-head" id="sessions-toggle" type="button">
-        <i class="ic ic-activity sessions-pulse"></i>
-        <span id="sessions-summary" class="sessions-summary"></span>
+  <nav class="rail" id="rail" aria-label="主导航">
+    <div class="rail-brand">
+      <img class="logo-img" src="/static/icons/logo.svg" alt="">
+      <span class="rail-label">BlockUSBRead</span>
+    </div>
+
+    <div class="rail-group">
+      <a class="rail-item" href="#/storage" data-nav="storage" aria-current="page">
+        <i class="ic ic-disk"></i><span class="rail-label">存储</span>
+        <span class="rail-badge" data-badge="alert" hidden>0</span>
+      </a>
+      <a class="rail-item" href="#/jobs" data-nav="jobs">
+        <i class="ic ic-move"></i><span class="rail-label">传输</span>
+        <span class="rail-badge" data-badge="jobs" hidden>0</span>
+      </a>
+      <a class="rail-item" href="#/sessions" data-nav="sessions">
+        <i class="ic ic-activity"></i><span class="rail-label">会话</span>
+        <span class="rail-badge" data-badge="sessions" hidden>0</span>
+      </a>
+    </div>
+
+    <div class="rail-group rail-foot">
+      <button class="rail-item" id="btn-remote" type="button" hidden
+              title="挂载远程 SFTP 存储">
+        <i class="ic ic-network"></i><span class="rail-label">添加远程存储</span>
       </button>
-      <div id="sessions-detail" class="sessions-detail" hidden></div>
+      <button class="rail-item" id="btn-collapse" type="button"
+              aria-expanded="true" aria-controls="rail" title="折叠导航">
+        <i class="ic ic-chevron"></i><span class="rail-label">折叠导航</span>
+      </button>
+      <button class="rail-item danger" id="btn-logout" type="button">
+        <i class="ic ic-power"></i><span class="rail-label">退出</span>
+      </button>
     </div>
+  </nav>
 
-    <section id="sec-local" hidden>
-      <div class="page-head">
-        <h2>本地存储</h2>
-        <p>宿主机映射的文件夹，始终可读写</p>
+  <div class="main">
+    <header class="topbar">
+      <h1 class="page-title" id="page-title">存储</h1>
+      <div class="topbar-actions">
+        <span class="freshness" id="freshness" role="status">
+          <i class="ic ic-clock"></i><span id="freshness-text">连接中…</span>
+        </span>
+        <button class="btn" id="btn-refresh" type="button">
+          <i class="ic ic-refresh"></i><span>刷新设备</span>
+        </button>
       </div>
-      <div id="local-list" class="volume-list"></div>
-    </section>
+    </header>
 
-    <section id="sec-disks" hidden>
-      <div class="page-head">
-        <h2>外接存储</h2>
-        <p>插入 USB 硬盘后自动识别；BitLocker 卷解锁后通过 SFTP 访问</p>
-      </div>
-      <div id="disk-list"></div>
-    </section>
+    <div class="view-region">
+      <div id="global-banner" class="callout" hidden role="status"></div>
+      <div id="share-banner" class="callout info" hidden></div>
 
-    <section id="sec-remote" hidden>
-      <div class="page-head">
-        <h2>远程存储</h2>
-        <p>通过 SFTP 挂载的远程硬盘</p>
-      </div>
-      <div id="remote-list" class="volume-list"></div>
-    </section>
-
-    <div id="storage-empty" class="empty" hidden>
-      <div class="big"><i class="ic ic-empty"></i></div>
-      <div>暂无存储</div>
-      <div style="margin-top:6px;font-size:12px">请插入 USB 硬盘，或在上方 SFTP 面板添加远程存储</div>
-    </div>
-  </main>
-</div>
-
-<div id="toast-container"></div>
-
-<!-- 文件浏览弹窗 -->
-<div id="remote-modal" class="modal-mask" hidden>
-  <div class="modal">
-    <div class="modal-head">
-      <div class="modal-title">
-        <i class="ic ic-network"></i>
-        <span>挂载远程 SFTP 存储</span>
-      </div>
-      <button class="btn icon-btn" id="remote-close" title="关闭"><i class="ic ic-close"></i></button>
-    </div>
-    <form id="remote-form">
-      <div class="field">
-        <span>快速连接（可选）</span>
-        <input id="remote-quick-url" type="text" autocomplete="off"
-               placeholder="sftp://user@host:port/path 或 sftp://host:port/path">
-        <span style="font-size:11.5px;color:var(--text-muted);margin-top:4px;display:block">粘贴完整地址后自动填充下方字段，只需输入密码即可连接</span>
-      </div>
-      <div class="remote-grid">
-        <label class="field"><span>远程组</span>
-          <input id="remote-group" type="text" maxlength="64" placeholder="留空默认为用户名"></label>
-        <label class="field"><span>主机</span>
-          <input id="remote-host" type="text" placeholder="IP 或域名" required></label>
-        <label class="field field-narrow"><span>端口</span>
-          <input id="remote-port" type="number" min="1" max="65535" value="22" required></label>
-        <label class="field"><span>用户名</span>
-          <input id="remote-username" type="text" autocomplete="off" required></label>
-        <label class="field remote-path-field"><span>远端路径</span>
-          <input id="remote-path" type="text" value="/" placeholder="/volume1/media"></label>
-      </div>
-      <div class="seg" id="remote-auth-seg" role="tablist">
-        <button type="button" class="active" data-auth="password">密码认证</button>
-        <button type="button" data-auth="key">SSH 私钥</button>
-      </div>
-      <div class="field" id="remote-password-row">
-        <input id="remote-password" type="password" autocomplete="new-password" placeholder="SSH 登录密码">
-      </div>
-      <div class="field" id="remote-key-row" hidden>
-        <textarea id="remote-key" rows="4"
-                  placeholder="粘贴 OpenSSH 私钥（-----BEGIN OPENSSH PRIVATE KEY-----）"></textarea>
-      </div>
-      <div class="wrong" id="remote-error" hidden></div>
-      <div class="remote-form-foot">
-        <button type="submit" class="btn primary"><i class="ic ic-network"></i>连接并挂载</button>
-        <span class="banner-sub">凭据将使用 SECRET_KEY 加密保存到容器数据目录，重启后自动重连</span>
-      </div>
-    </form>
-  </div>
-</div>
-
-<div id="fs-modal" class="modal-mask" hidden>
-  <div class="modal modal-lg">
-    <div class="modal-head">
-      <div class="modal-title">
-        <i class="ic ic-folder-open"></i>
-        <span id="fs-title">文件</span>
-      </div>
-      <button class="btn icon-btn" id="fs-close" title="关闭"><i class="ic ic-close"></i></button>
-    </div>
-    <div class="fs-toolbar">
-      <div id="fs-crumbs" class="crumbs"></div>
-      <div class="fs-tools">
-        <button class="btn mini" id="fs-reload" title="刷新"><i class="ic ic-refresh"></i></button>
-        <button class="btn mini primary" id="fs-upload" hidden><i class="ic ic-upload"></i>上传文件</button>
-        <input type="file" id="fs-file-input" hidden>
-      </div>
-    </div>
-    <div id="fs-upload-progress" class="upload-progress" hidden>
-      <div class="upload-track"><div class="upload-fill" style="width:0%"></div></div>
-      <span class="upload-text">上传中… 0%</span>
-    </div>
-    <div id="fs-list" class="fs-list"></div>
-  </div>
-</div>
-
-<!-- 媒体播放弹窗 -->
-<div id="player-modal" class="modal-mask" hidden>
-  <div class="modal modal-media">
-    <div class="modal-head">
-      <div class="modal-title" id="player-title">—</div>
-      <button class="btn icon-btn" id="player-close" title="关闭"><i class="ic ic-close"></i></button>
-    </div>
-    <div id="player-body" class="player-body"></div>
-  </div>
-</div>
-
-<!-- 文本预览弹窗 -->
-<div id="text-modal" class="modal-mask" hidden>
-  <div class="modal modal-text">
-    <div class="modal-head">
-      <div class="modal-title">
-        <i class="ic ic-file"></i><span id="text-title">—</span>
-      </div>
-      <button class="btn icon-btn" id="text-close" title="关闭（Esc）"><i class="ic ic-close"></i></button>
-    </div>
-    <div class="text-bar">
-      <span id="text-meta" class="text-meta">—</span>
-      <button class="btn mini" id="text-download"><i class="ic ic-download"></i>下载原文件</button>
-    </div>
-    <pre id="text-body" class="text-body"></pre>
-  </div>
-</div>
-
-<!-- 移动/复制目标选择弹窗 -->
-<div id="move-modal" class="modal-mask" hidden>
-  <div class="modal modal-lg">
-    <div class="modal-head">
-      <div class="modal-title"><i class="ic ic-move"></i><span id="move-title">移动到…</span></div>
-      <button class="btn icon-btn" id="move-close" title="关闭"><i class="ic ic-close"></i></button>
-    </div>
-    <div class="modal-body move-body">
-      <div class="move-source">
-        <span class="move-kicker">移动项目</span>
-        <div class="move-source-name"><i class="ic ic-file"></i><span id="move-src-name">—</span></div>
-        <div id="move-hint" class="move-hint"></div>
-      </div>
-      <div class="field">
-        <span>目标硬盘（仅显示读写模式挂载的卷，只读盘无法接收粘贴）</span>
-        <div class="select" id="move-disk-select">
-          <button type="button" class="select-toggle" id="move-disk-toggle" aria-haspopup="listbox" aria-expanded="false">
-            <span id="move-disk-label">—</span>
-            <i class="ic ic-arrow-down"></i>
-          </button>
-          <div class="select-menu" id="move-disk-menu" role="listbox" hidden></div>
+      <!-- ---------------------------------------------- 存储 -->
+      <section id="view-storage" class="view" data-view="storage">
+        <div class="kpi-strip" id="kpi-strip" hidden>
+          <div class="kpi">
+            <span class="kpi-label">已挂载</span>
+            <strong class="kpi-value" data-kpi="mounted">—</strong>
+            <span class="kpi-sub" data-kpi="mountedSub">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">读取</span>
+            <strong class="kpi-value" data-kpi="read">0 B/s</strong>
+            <span class="kpi-sub">全部卷合计</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">写入</span>
+            <strong class="kpi-value" data-kpi="write">0 B/s</strong>
+            <span class="kpi-sub">全部卷合计</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">可用容量</span>
+            <strong class="kpi-value" data-kpi="avail">—</strong>
+            <span class="kpi-sub" data-kpi="total">—</span>
+          </div>
+          <div class="kpi">
+            <span class="kpi-label">SFTP 连接</span>
+            <strong class="kpi-value" data-kpi="conns">0</strong>
+            <span class="kpi-sub" data-kpi="openFiles">无打开文件</span>
+          </div>
         </div>
+        <div id="storage-body"></div>
+        <div id="storage-empty" class="empty" hidden>
+          <div class="big"><i class="ic ic-empty"></i></div>
+          <p>暂无存储</p>
+          <p class="sub">请插入 USB 硬盘后点「刷新设备」，或添加远程 SFTP 存储</p>
+          <div class="empty-actions">
+            <button class="btn primary" id="empty-remote" type="button">
+              <i class="ic ic-network"></i>添加远程存储
+            </button>
+            <button class="btn" data-action="rescan" type="button">
+              <i class="ic ic-refresh"></i>刷新设备
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------- 传输任务 -->
+      <section id="view-jobs" class="view" data-view="jobs" hidden>
+        <div class="view-head">
+          <p class="view-note">任务在设备内部执行，关闭页面或弹出无关硬盘都不会中断；相关硬盘需等任务完成才能弹出。</p>
+          <div class="segmented" id="jobs-filter" role="group" aria-label="任务筛选">
+            <button class="active" type="button" data-filter="all">全部</button>
+            <button type="button" data-filter="active">进行中</button>
+            <button type="button" data-filter="finished">已结束</button>
+          </div>
+        </div>
+        <div id="jobs-body"></div>
+      </section>
+
+      <!-- ---------------------------------------------- SFTP 会话 -->
+      <section id="view-sessions" class="view" data-view="sessions" hidden>
+        <div class="view-head">
+          <p class="view-note">当前连接到本机 SFTP 的客户端与正在读写的文件；卸载被占用的卷前需先在此确认。</p>
+        </div>
+        <div id="sessions-body"></div>
+      </section>
+    </div>
+
+    <!-- ---------------------------------------------- 底部常驻传输条 -->
+    <div class="dock" id="job-dock" hidden>
+      <div class="dock-info">
+        <i class="ic ic-move"></i>
+        <span class="dock-name" data-dock="name">—</span>
+        <span class="dock-meta" data-dock="meta">—</span>
       </div>
-      <label class="move-keep" id="move-keep-row" hidden>
+      <div class="meter dock-meter"><span class="meter-track"><span class="meter-fill" style="width:0%"></span></span></div>
+      <div class="dock-actions">
+        <button class="btn s" type="button" data-action="dock-open"><i class="ic ic-folder-open"></i>查看</button>
+        <button class="btn s danger" type="button" data-action="dock-cancel"><i class="ic ic-close"></i>取消</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ 抽屉：文件浏览 -->
+<div class="overlay drawer-layer" id="fs-layer" hidden>
+  <div class="overlay-scrim" data-dismiss="fs"></div>
+  <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="fs-title">
+    <div class="overlay-head">
+      <div class="overlay-title">
+        <i class="ic ic-folder-open"></i><span id="fs-title">文件</span>
+      </div>
+      <div class="overlay-tools">
+        <button class="btn s" id="fs-reload" type="button" title="刷新"><i class="ic ic-refresh"></i></button>
+        <button class="btn primary s" id="fs-upload" type="button" hidden><i class="ic ic-upload"></i>上传文件</button>
+        <input type="file" id="fs-file-input" hidden>
+        <button class="btn icon s" id="fs-close" type="button" data-close title="关闭（Esc）"><i class="ic ic-close"></i></button>
+      </div>
+    </div>
+    <nav class="crumbs" id="fs-crumbs" aria-label="当前路径"></nav>
+    <div class="callout danger" id="fs-error" hidden role="alert">
+      <i class="ic ic-alert"></i><span id="fs-error-msg"></span>
+      <button class="btn s" type="button" id="fs-error-retry"><i class="ic ic-refresh"></i>重试</button>
+    </div>
+    <div class="progress" id="fs-upload-progress" hidden>
+      <span class="progress-track"><span class="progress-fill" style="width:0%"></span></span>
+      <span class="progress-label">上传中…</span>
+    </div>
+    <div class="overlay-body">
+      <table class="table files">
+        <colgroup><col class="c-name"><col class="c-meta"><col class="c-act"></colgroup>
+        <thead>
+          <tr><th scope="col">名称</th><th scope="col" class="col-meta">大小 · 修改时间</th><th scope="col" class="ta-r">操作</th></tr>
+        </thead>
+        <tbody id="fs-list"></tbody>
+      </table>
+    </div>
+  </aside>
+</div>
+
+<!-- ============================================================ 对话框：远程存储 -->
+<div class="overlay dialog-layer" id="remote-modal" hidden>
+  <div class="overlay-scrim" data-dismiss="remote"></div>
+  <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="remote-heading">
+    <div class="overlay-head">
+      <div class="overlay-title"><i class="ic ic-network"></i><span id="remote-heading">挂载远程 SFTP 存储</span></div>
+      <button class="btn icon s" id="remote-close" type="button" data-close title="关闭"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="overlay-body">
+      <form id="remote-form">
+        <div class="field">
+          <span>快速连接（可选）</span>
+          <input id="remote-quick-url" type="text" autocomplete="off"
+                 placeholder="sftp://user@host:port/path 或 sftp://host:port/path">
+          <small>粘贴完整地址后自动填充下方字段，只需输入密码即可连接</small>
+        </div>
+        <div class="grid-2">
+          <label class="field"><span>远程组</span>
+            <input id="remote-group" type="text" maxlength="64" placeholder="留空默认为用户名"></label>
+          <label class="field"><span>主机</span>
+            <input id="remote-host" type="text" placeholder="IP 或域名" required></label>
+          <label class="field"><span>端口</span>
+            <input id="remote-port" type="number" min="1" max="65535" value="22" required></label>
+          <label class="field"><span>用户名</span>
+            <input id="remote-username" type="text" autocomplete="off" required></label>
+          <label class="field span-2"><span>远端路径</span>
+            <input id="remote-path" type="text" value="/" placeholder="/volume1/media"></label>
+        </div>
+        <div class="segmented" id="remote-auth-seg" role="group" aria-label="认证方式">
+          <button type="button" class="active" data-auth="password">密码认证</button>
+          <button type="button" data-auth="key">SSH 私钥</button>
+        </div>
+        <div class="field" id="remote-password-row">
+          <input id="remote-password" type="password" autocomplete="new-password" placeholder="SSH 登录密码">
+        </div>
+        <div class="field" id="remote-key-row" hidden>
+          <textarea id="remote-key" rows="4"
+                    placeholder="粘贴 OpenSSH 私钥（-----BEGIN OPENSSH PRIVATE KEY-----）"></textarea>
+        </div>
+        <div class="callout danger" id="remote-error" hidden role="alert"></div>
+        <div class="dialog-foot">
+          <button type="submit" class="btn primary"><i class="ic ic-network"></i>连接并挂载</button>
+          <small>凭据使用 SECRET_KEY 加密保存到容器数据目录，重启后自动重连</small>
+        </div>
+      </form>
+    </div>
+  </section>
+</div>
+
+<!-- ============================================================ 对话框：移动/复制目标 -->
+<div class="overlay dialog-layer" id="move-modal" hidden>
+  <div class="overlay-scrim" data-dismiss="move"></div>
+  <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="move-heading">
+    <div class="overlay-head">
+      <div class="overlay-title"><i class="ic ic-move"></i><span id="move-heading">移动到…</span></div>
+      <button class="btn icon s" id="move-close" type="button" data-close title="关闭"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="overlay-body">
+      <div class="source-line">
+        <span class="kicker">移动项目</span>
+        <span class="source-name"><i class="ic ic-file"></i><span id="move-src-name">—</span></span>
+      </div>
+      <div class="callout warning" id="move-hint" hidden></div>
+
+      <ol class="steps">
+        <li class="step" data-step="1">
+          <label class="field">
+            <span>① 目标硬盘</span>
+            <select id="move-disk-select"></select>
+            <small>仅列出可写入的存储：本地 / 远程恒可写，外接需以读写模式挂载</small>
+          </label>
+        </li>
+        <li class="step" data-step="2">
+          <span class="field-label">② 目标文件夹</span>
+          <nav class="crumbs" id="move-crumbs" aria-label="目标路径"></nav>
+          <div class="dir-list" id="move-dir-list"></div>
+        </li>
+      </ol>
+
+      <label class="checkline" id="move-keep-row">
         <input type="checkbox" id="move-keep">
         <span>保留源文件（复制一份，不移动）</span>
       </label>
-      <div class="field">
-        <span>目标文件夹</span>
-        <div id="move-crumbs" class="crumbs move-crumbs"></div>
-        <div id="move-dir-list" class="fs-list move-dir-list"></div>
-      </div>
-      <div class="modal-actions">
-        <button class="btn" id="move-cancel-btn">取消</button>
-        <button class="btn primary" id="move-confirm"><i class="ic ic-move"></i><span id="move-confirm-label">开始移动</span></button>
-      </div>
+      <div class="callout danger" id="move-error" hidden role="alert"></div>
     </div>
-  </div>
+    <div class="dialog-foot end">
+      <button class="btn" id="move-cancel-btn" type="button" data-close>取消</button>
+      <button class="btn primary" id="move-confirm" type="button">
+        <i class="ic ic-move"></i><span id="move-confirm-label">开始移动</span>
+      </button>
+    </div>
+  </section>
 </div>
 
-<!-- 后台传输任务弹窗 -->
-<div id="jobs-modal" class="modal-mask" hidden>
-  <div class="modal modal-lg">
-    <div class="modal-head">
-      <div class="modal-title"><i class="ic ic-move"></i>后台传输</div>
-      <button class="btn icon-btn" id="jobs-close" title="关闭"><i class="ic ic-close"></i></button>
+<!-- ============================================================ 对话框：重命名 -->
+<div class="overlay dialog-layer" id="rename-modal" hidden>
+  <div class="overlay-scrim" data-dismiss="rename"></div>
+  <section class="dialog dialog-sm" role="dialog" aria-modal="true" aria-labelledby="rename-heading">
+    <div class="overlay-head">
+      <div class="overlay-title"><i class="ic ic-edit"></i><span id="rename-heading">重命名</span></div>
+      <button class="btn icon s" id="rename-close" type="button" data-close title="关闭"><i class="ic ic-close"></i></button>
     </div>
-    <div class="jobs-tip">任务在设备内部执行，关闭此窗口或网页都不会中断；弹出相关硬盘前需等待完成。</div>
-    <div id="jobs-list" class="jobs-list"></div>
-  </div>
-</div>
-
-<!-- 重命名弹窗 -->
-<div id="rename-modal" class="modal-mask" hidden>
-  <div class="modal">
-    <div class="modal-head">
-      <div class="modal-title"><i class="ic ic-edit"></i>重命名</div>
-      <button class="btn icon-btn" id="rename-close"><i class="ic ic-close"></i></button>
-    </div>
-    <div class="modal-body">
+    <div class="overlay-body">
       <label class="field">
         <span>新名称</span>
         <input id="rename-input" type="text" autocomplete="off">
       </label>
-      <div id="rename-error" class="wrong" hidden></div>
-      <div class="modal-actions">
-        <button class="btn" id="rename-cancel">取消</button>
-        <button class="btn primary" id="rename-ok">确定</button>
-      </div>
+      <div class="callout danger" id="rename-error" hidden role="alert"></div>
     </div>
-  </div>
+    <div class="dialog-foot end">
+      <button class="btn" id="rename-cancel" type="button" data-close>取消</button>
+      <button class="btn primary" id="rename-ok" type="button">确定</button>
+    </div>
+  </section>
 </div>
 
-<script src="/static/app.js"></script>
+<!-- ============================================================ 覆盖层：媒体 / 文本 -->
+<div class="overlay viewer-layer" id="player-modal" hidden>
+  <div class="overlay-scrim" data-dismiss="player"></div>
+  <section class="viewer" role="dialog" aria-modal="true" aria-labelledby="player-title">
+    <div class="overlay-head">
+      <div class="overlay-title"><span id="player-title">—</span></div>
+      <button class="btn icon s" id="player-close" type="button" data-close title="关闭（Esc）"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="viewer-body" id="player-body"></div>
+  </section>
+</div>
+
+<div class="overlay viewer-layer" id="text-modal" hidden>
+  <div class="overlay-scrim" data-dismiss="text"></div>
+  <section class="viewer viewer-doc" role="dialog" aria-modal="true" aria-labelledby="text-title">
+    <div class="overlay-head">
+      <div class="overlay-title"><i class="ic ic-file"></i><span id="text-title">—</span></div>
+      <button class="btn icon s" id="text-close" type="button" data-close title="关闭（Esc）"><i class="ic ic-close"></i></button>
+    </div>
+    <div class="doc-bar">
+      <span class="doc-meta" id="text-meta">—</span>
+      <button class="btn s" id="text-download" type="button"><i class="ic ic-download"></i>下载原文件</button>
+    </div>
+    <pre class="doc-body" id="text-body"></pre>
+  </section>
+</div>
+
+<div id="toast-container" role="status" aria-live="polite"></div>
+
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>
