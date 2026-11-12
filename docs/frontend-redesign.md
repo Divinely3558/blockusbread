@@ -423,5 +423,19 @@
 4. 面板重绘清掉输入到一半的密码；见上条渲染管线实测。
 5. 层管理只在覆盖层之间切 `inert`，背景 `#shell` 从不 inert → 抽屉打开时 Tab 能走进顶栏与导航；另外 `close()` 先还焦点后 `syncScrim()`，此时背景仍是 inert，焦点被静默丢弃（Esc 后落到 `body`）。现改为「进层时 inert 背景、出层时先解除再还焦点」。
 6. P7 对照时发现 §8 承诺的表格 `↑/↓` roving 与 `E` 弹出根本没写（只有 `Enter`/`Esc`），已补齐并实测（见上）。同批发现本文自身三处与实现不符：§4.1「rail 4 个导航项」实为 3 视图 + 抽屉、§10 的 `views/`+`components/` 目录树实为扁平 `js/*.js`、§11 P1 行的「4 视图」——均已按落地结果改写，而不是反过来改代码去凑文档。
+7. 入口页 `GET /` 用 `FileResponse` 直接返回 `index.html`，却没有 `Cache-Control`（`_NoCacheStatic` 只覆盖 `/static/*`），浏览器可启发式缓存它 —— 本次把 `app.js` 拆成 ES 模块之后，拿到旧的 index.html 会引用不存在的脚本。现给 `/` 补 `no-cache`。
 
 未能实测、需在真机确认（我不把它说成"已验证"）：真实 BitLocker `unlocking→mounting→mounted` 与 `ro/rw` 差异、拔出触发的 `removed` 提示、busy 弹出的占用清单、`/api/disks/{id}/smart` 的真实字段、SFTP 会话计数与盘符映射。这些走的是同一套渲染分支与契约桩，但状态机转换只有你的设备能跑出来。
+
+---
+
+## 17. 收尾：安全与缓存（v1.3.2）
+
+前端重做之外顺带的三项，都不改接口语义（Q9 那一处除外，见 §14）：
+
+- **口令下发（Q9，方案 B）**：`/api/share` 去掉 `password`，前端信息条去掉掩码与「复制密码」，改为文案「与登录管理页的相同」。实测方式是让桩**继续**返回口令，再确认 DOM、`data-copy`、剪贴板三处都搜不到它 —— 这样即使后端回滚也不会立刻重新泄漏。
+- **`/api/*` 改 `no-store`**：`app/main.py` 新增 http 中间件，只匹配 `/api/` 前缀。与静态资源的 `no-cache` 是分开的两件事：`no-cache` 允许存副本、只是每次必须回源验证；登录态下的卷清单、任务、会话不该在任何地方留下副本，所以是 `no-store`。`/health` 与 `/static/*` 不受影响。
+- **CSP 维持现状**：仓库里唯一的 CSP 是文件预览/下载响应上的 `Content-Security-Policy: sandbox`（`app/web/files.py:177`），保持不变。本次把内联 `onclick` 降到 0、脚本只剩同源 ES 模块，所以将来真要加 `script-src 'none'`-级别的页面 CSP 已经没有障碍，但那属于独立的加固任务，不在重设计范围内。
+
+`tests/test_cache_headers.py` 锁住三档头：未登录的 `/api/volumes` 也得带 `no-store`（缓存策略不该只挑成功响应），`/` 与 `/static/app.js` 保持 `no-cache`。SSE 未被中间件打断：用一个自终止的 `StreamingResponse` 走同一段中间件代码，`cache-control: no-store` 在首块之前就已发出，分块内容照原样读得到。
+

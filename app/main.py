@@ -7,7 +7,7 @@ import contextlib
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -168,12 +168,26 @@ class _NoCacheStatic(StaticFiles):
         return resp
 
 
+@app.middleware("http")
+async def _api_no_store(request: Request, call_next):
+    """接口返回的是登录态下的当下状态，允许缓存就等于允许把上一次的卷、任务、会话给别人看。
+
+    与静态资源的 no-cache 分开：no-cache 还能存副本只是必须回源验证，no-store 才是完全不落盘。
+    """
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 app.mount("/static", _NoCacheStatic(directory=str(STATIC_DIR)), name="static")
 
 
 @app.get("/", include_in_schema=False)
 async def index():
-    return FileResponse(STATIC_DIR / "index.html")
+    resp = FileResponse(STATIC_DIR / "index.html")
+    resp.headers["Cache-Control"] = "no-cache"   # 入口页也得回源，否则改版后拿旧的 index.html
+    return resp
 
 
 @app.get("/health", include_in_schema=False)
