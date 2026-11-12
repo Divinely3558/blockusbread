@@ -424,6 +424,8 @@
 5. 层管理只在覆盖层之间切 `inert`，背景 `#shell` 从不 inert → 抽屉打开时 Tab 能走进顶栏与导航；另外 `close()` 先还焦点后 `syncScrim()`，此时背景仍是 inert，焦点被静默丢弃（Esc 后落到 `body`）。现改为「进层时 inert 背景、出层时先解除再还焦点」。
 6. P7 对照时发现 §8 承诺的表格 `↑/↓` roving 与 `E` 弹出根本没写（只有 `Enter`/`Esc`），已补齐并实测（见上）。同批发现本文自身三处与实现不符：§4.1「rail 4 个导航项」实为 3 视图 + 抽屉、§10 的 `views/`+`components/` 目录树实为扁平 `js/*.js`、§11 P1 行的「4 视图」——均已按落地结果改写，而不是反过来改代码去凑文档。
 7. 入口页 `GET /` 用 `FileResponse` 直接返回 `index.html`，却没有 `Cache-Control`（`_NoCacheStatic` 只覆盖 `/static/*`），浏览器可启发式缓存它 —— 本次把 `app.js` 拆成 ES 模块之后，拿到旧的 index.html 会引用不存在的脚本。现给 `/` 补 `no-cache`。
+8. （真机反馈）对话框头部的关闭按钮贴在标题文字右边，而不是面板右缘：`.overlay-head` 的直接子元素是 `.overlay-title` + 按钮，标题只有 `min-width: 0` 没有 `flex: 1`，撑不满一行 → 按钮跟着标题走；抽屉看起来正常是因为它的按钮包在 `.overlay-tools { margin-left: auto }` 里。5 个对话框全部中招。改为标题 `flex: 1 1 auto` 一处覆盖全部，实测各层关闭按钮距面板右缘 12–13px（正好等于头部右内边距），标题省略号仍生效，图标与文字之间 8px 不再压字。
+9. （真机反馈）三个分组图标不清楚：`icon-local` / `icon-external` / `icon-remote` 是位图描出来的 trace 路径（8.2KB / 14.6KB / 18.8KB，单文件 166–255 个路径段、坐标全是随机小数），16px 下发糊，且 `icon-local` 读起来像一台显示器而不是本地存储。改为 1024 网格的描边图标（`stroke-width: 88` ≈ 24px 下 2px，与其余图标同一视觉重量），文件降到 252–350 字节：本地 = 双层服务器、外接 = 带 USB 接口的硬盘、远程 = 云。其余图标经核为参数化路径（`icon-network` 2.2KB 也是），未动。
 
 未能实测、需在真机确认（我不把它说成"已验证"）：真实 BitLocker `unlocking→mounting→mounted` 与 `ro/rw` 差异、拔出触发的 `removed` 提示、busy 弹出的占用清单、`/api/disks/{id}/smart` 的真实字段、SFTP 会话计数与盘符映射。这些走的是同一套渲染分支与契约桩，但状态机转换只有你的设备能跑出来。
 

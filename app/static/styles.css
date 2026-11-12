@@ -602,7 +602,7 @@ tr.placeholder.loading > td { display: flex; align-items: center; justify-conten
   border-bottom: 1px solid var(--border); flex: none;
 }
 .overlay-title {
-  display: flex; align-items: center; gap: var(--s-2); min-width: 0;
+  display: flex; align-items: center; gap: var(--s-2); flex: 1 1 auto; min-width: 0;
   font-size: 16px; font-weight: 600; color: var(--text-1);
 }
 .overlay-title .ic { color: var(--accent); font-size: 17px; }
