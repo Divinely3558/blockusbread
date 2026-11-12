@@ -141,8 +141,8 @@ async def me(session: dict = Depends(current_session)):
 async def share_info(request: Request, _: dict = Depends(current_session)):
     """SFTP 连接信息（主机名取用户实际访问管理页所用的地址）。
 
-    账号密码与网页登录相同，随接口返回仅为方便用户在客户端填写；
-    该接口本身要求已登录会话才能访问。
+    账号密码与网页登录相同，因此**不下发口令**：明文进了响应就同时进浏览器历史、
+    代理日志和任何登录态脚本，而用户手上本来就有这个口令。
     """
     host = request.headers.get("host", "").split(":")[0] or "localhost"
     settings = request.app.state.settings
@@ -152,7 +152,6 @@ async def share_info(request: Request, _: dict = Depends(current_session)):
         "host": host,
         "port": port,
         "username": settings.admin_user,
-        "password": settings.admin_password,
         "uri": f"sftp://{settings.admin_user}@{host}:{port}/",
     }
 
