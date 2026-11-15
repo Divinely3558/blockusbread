@@ -64,6 +64,8 @@ function syncScrim() {
   }
   const bg = [document.getElementById("shell"), document.getElementById("login")];
   for (const el of bg) if (el) el.inert = stack.length > 0;   // 隐藏时也写回，避免留个 inert 给下次登录
+  // 手机上拖动遮罩不该让底下的列表跟着滚：层开着就锁住文档滚动
+  document.documentElement.classList.toggle("overlay-open", stack.length > 0);
 }
 
 document.addEventListener("keydown", (e) => {

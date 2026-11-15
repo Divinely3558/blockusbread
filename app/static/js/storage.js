@@ -589,15 +589,11 @@ export function renderKpis() {
 
   let rx = 0, tx = 0;
   for (const s of Object.values(state.rates)) { rx += s.rx || 0; tx += s.tx || 0; }
-  let avail = 0, total = 0;
-  for (const u of Object.values(state.usage)) { avail += u.avail || 0; total += u.total || 0; }
 
   set("mounted", `${mounted.length} / ${rows.length}`);
   set("mountedSub", `本地 ${count("local")} · 外接 ${mountedCount("external")} · 远程 ${mountedCount("remote")}`);
   set("read", rateText(rx));
   set("write", rateText(tx));
-  set("avail", humanSize(avail));
-  set("total", total ? `共 ${humanSize(total)}` : "—");
 
   const s = state.sessions;
   const open = s ? (s.openFiles || []).length : 0;

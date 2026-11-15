@@ -53,6 +53,12 @@
   --dialog-w: 600px;
   --dialog-w-sm: 420px;
   --drawer-w: min(760px, 68vw);
+  /* 手机端底部导航高度；--safe-* 由 viewport-fit=cover 后取刘海 / 指示条安全区 */
+  --nav-h: 56px;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
 
   --radius-sm: 8px;
   --radius: 10px;
@@ -80,13 +86,28 @@
 
 html, body { margin: 0; padding: 0; }
 
+html {
+  /* 横屏 / 缩放时 iOS 会自行放大字号，这里只保证不被其它规则误调 */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 层打开时锁背景滚动：手机上拖动遮罩不该让底下的列表跟着滚 */
+html.overlay-open, html.overlay-open body { overflow: hidden; }
+
 body {
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg);
   color: var(--text-2);
   font: 400 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto,
         "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 触屏：去掉双击缩放判定带来的 300ms 延迟与灰色高亮块 */
+button, a, label, summary, tr.row, tr.frow, .drow, .crumb, .drive {
+  touch-action: manipulation;
 }
 
 h1, h2, h3 { margin: 0; color: var(--text-1); font-weight: 600; letter-spacing: -.01em; }
@@ -298,7 +319,11 @@ select {
 
 /* ============================================================ 登录 */
 #login {
-  display: grid; place-items: center; min-height: 100vh; padding: var(--s-4);
+  display: grid; place-items: center; min-height: 100vh; min-height: 100dvh;
+  padding: var(--s-4);
+  padding: max(var(--s-4), var(--safe-top)) max(var(--s-4), var(--safe-right))
+           max(var(--s-4), calc(var(--s-4) + var(--safe-bottom)))
+           max(var(--s-4), var(--safe-left));
   background: var(--bg);
 }
 .login-card {
@@ -317,6 +342,7 @@ select {
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr);
   min-height: 100vh;
+  min-height: 100dvh;
   background: var(--bg);
 }
 #shell.rail-open { grid-template-columns: var(--rail-w-open) minmax(0, 1fr); }
@@ -325,7 +351,7 @@ select {
 .rail {
   position: sticky; top: 0;
   display: flex; flex-direction: column; gap: var(--s-2);
-  height: 100vh; padding: var(--s-3) var(--s-2);
+  height: 100vh; height: 100dvh; padding: var(--s-3) var(--s-2);
   background: var(--bg);
   border-right: 1px solid var(--border);
   overflow: hidden;
@@ -594,8 +620,14 @@ tr.placeholder.loading > td { display: flex; align-items: center; justify-conten
 @keyframes pulse { from { opacity: .45; } to { opacity: 1; } }
 
 /* ============================================================ 层：遮罩 / 抽屉 / 对话框 / viewer */
-.overlay { position: fixed; inset: 0; z-index: var(--z-overlay); display: flex; }
-.overlay-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, .66); }
+/* 层用 dvh 而非 inset:0 的 bottom：iOS 键盘弹出时布局视口不变，
+   靠 dvh + 内部滚动让输入框不至于被键盘压在下面 */
+.overlay {
+  position: fixed; top: 0; right: 0; left: 0; bottom: 0;
+  height: 100vh; height: 100dvh;
+  z-index: var(--z-overlay); display: flex;
+}
+.overlay-scrim { position: absolute; inset: 0; background: rgba(0, 0, 0, .66); touch-action: none; }
 .overlay-head {
   display: flex; align-items: center; gap: var(--s-3);
   height: 56px; padding: 0 var(--s-3) 0 var(--s-5);
@@ -608,7 +640,10 @@ tr.placeholder.loading > td { display: flex; align-items: center; justify-conten
 .overlay-title .ic { color: var(--accent); font-size: 17px; }
 .overlay-title span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .overlay-tools { margin-left: auto; display: flex; align-items: center; gap: var(--s-2); }
-.overlay-body { flex: 1; min-height: 0; overflow: auto; padding: var(--s-5); }
+.overlay-body {
+  flex: 1; min-height: 0; overflow: auto; padding: var(--s-5);
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+}
 
 /* -------- 抽屉 */
 .overlay.drawer-layer { justify-content: flex-end; }
@@ -848,30 +883,118 @@ option { color: var(--text-1); background: var(--surface-2); }
   .kpi-value { font-size: 24px; }
 }
 
-@media (max-width: 768px) {
+/* ------------------------------------------------------------ 手机主版式（竖屏窄宽 + 横屏矮高）
+   手机不是「把桌面缩小」：导航降到拇指可及的底部，表格改为卡片，层改为整屏，
+   长说明折叠，一切以「首屏就能看到第一台设备」为准。
+   横屏手机宽度可达 850–950px，只看 max-width 会退回桌面版式（侧栏 + 五格 KPI），
+   一屏连一台设备都放不下，所以用「或 高度 ≤480 且触屏」把它一起纳进来。 */
+@media (max-width: 768px), (max-height: 480px) and (pointer: coarse) {
   #shell, #shell.rail-open { grid-template-columns: minmax(0, 1fr); }
+
+  /* -------- 底部导航 */
   .rail {
     position: fixed; bottom: 0; left: 0; right: 0; top: auto;
-    flex-direction: row; align-items: center; gap: 0;
-    height: 56px; padding: 0 var(--s-2);
+    flex-direction: row; align-items: stretch; gap: 0;
+    height: auto; min-height: calc(var(--nav-h) + var(--safe-bottom));
+    padding: var(--s-1) max(var(--s-1), var(--safe-left))
+             max(var(--s-1), var(--safe-bottom)) max(var(--s-1), var(--safe-right));
     border-right: 0; border-top: 1px solid var(--border);
   }
   .rail-brand, #btn-collapse { display: none; }
   .rail-group { flex-direction: row; flex: 1; gap: 0; }
   .rail-foot { margin-top: 0; flex-direction: row; }
-  .rail-item { flex-direction: column; gap: 2px; min-height: 52px; justify-content: center; padding: 0 var(--s-2); }
-  .rail-label { display: block; font-size: 10px; }
-  .rail-badge { position: absolute; transform: translate(14px, -14px); }
-  .main { padding-bottom: 56px; }
+  .rail-item {
+    position: relative; flex: 1; flex-direction: column; gap: 3px;
+    min-height: 48px; justify-content: center; padding: 0 var(--s-1);
+  }
+  .rail-item .ic { font-size: 20px; }
+  .rail-label { display: block; font-size: 10px; line-height: 1.2; white-space: nowrap; }
+  /* 折叠时隐藏文字是给桌面左栏图标条用的：手机底部 5 个纯图标认不出来 */
+  #shell:not(.rail-open) .rail-item .rail-label { display: block; }
+  #shell:not(.rail-open) .rail-item { padding: 0 var(--s-1); justify-content: center; }
+  .rail-badge { position: absolute; top: 4px; right: max(4px, 14%); left: auto; bottom: auto; transform: none; margin-left: 0; }
+
+  .main { padding-bottom: calc(var(--nav-h) + var(--safe-bottom)); }
   .view-region { padding: var(--s-3); }
-  .topbar { height: 52px; padding: 0 var(--s-3); }
+  .empty { padding: var(--s-8) var(--s-3); }
+
+  /* -------- 顶栏：只留必要动作，标题让位给省略号而不是把按钮挤走 */
+  .topbar {
+    height: calc(52px + var(--safe-top));
+    padding: var(--safe-top) var(--s-3) 0;
+  }
+  .page-title { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .freshness { display: none; }
+  #btn-refresh { width: 40px; padding: 0; }
+  #btn-refresh span { display: none; }
+
+  /* 手机首屏留给设备列表：4 张 KPI 卡排成 2×2，比 3+1 少一张孤卡 */
   .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .kpi { border-bottom: 1px solid var(--divider); }
+  .kpi { padding: var(--s-2) var(--s-3); border-bottom: 1px solid var(--divider); }
+  .kpi-label { font-size: 11px; }
+  .kpi-value { font-size: 18px; }
+  .kpi-sub { font-size: 11px; }
+
+  /* -------- 横幅：地址与账号是手机上的主要用途，长段说明默认折叠 */
+  .callout { padding: var(--s-3); gap: var(--s-2) var(--s-3); font-size: 12px; }
+  .callout code { padding: 2px 5px; word-break: break-all; }
+  .note-fold { flex-basis: 100%; }
+  .note-fold > summary {
+    display: inline-flex; align-items: center; gap: var(--s-1);
+    min-height: 32px; font-size: 12px; color: var(--text-3); cursor: pointer;
+  }
+  .note-fold > summary::before { content: ""; width: 0; height: 0; border: 4px solid transparent;
+    border-inline-start-color: var(--text-3); transition: transform var(--t-fast) var(--ease); }
+  .note-fold[open] > summary::before { transform: rotate(90deg); }
+  .note-fold > .note { margin-top: var(--s-1); }
+
+  /* -------- 层：手机上整屏，桌面尺寸会把视频缩成邮票、把主按钮挤到键盘下 */
   .drawer { width: 100%; }
   .overlay { --drawer-w: 100%; }
+  .overlay-head { padding: 0 var(--s-2) 0 var(--s-3); height: 52px; flex-wrap: nowrap; }
+  .overlay-title { font-size: 15px; flex: 1 1 auto; }
+  .overlay-tools { gap: var(--s-1); flex: none; }
+  .overlay-body { padding: var(--s-4) var(--s-3); }
+  .crumbs { padding: var(--s-2) var(--s-3); }
+  .drawer > .callout { margin: var(--s-2) var(--s-3) 0; }
+  .progress { padding: var(--s-2) var(--s-3); }
 
-  /* 表格 → 双行卡片，信息合并而非消失 */
+  .overlay.dialog-layer { padding: 0; align-items: stretch; justify-content: center; }
+  .dialog, .dialog-sm {
+    width: 100%; max-width: none; max-height: none;
+    border-radius: 0; border-left: 0; border-right: 0;
+  }
+  .dialog-foot.end { padding: var(--s-3) var(--s-4) calc(var(--s-3) + var(--safe-bottom)); }
+
+  .overlay.viewer-layer { padding: 0; align-items: stretch; }
+  .viewer, .viewer-doc { width: 100%; max-width: none; max-height: none; border-radius: 0; }
+  .viewer-body { padding: 0; }
+  .viewer-body video, .viewer-body img { width: 100%; max-height: 58vh; }
+  .doc-bar { padding: var(--s-2) var(--s-3); }
+  .doc-body { padding: var(--s-3); }
+
+  /* -------- 常驻传输条：停在底部导航之上，不能被导航盖住 */
+  .dock {
+    bottom: calc(var(--nav-h) + var(--safe-bottom));
+    flex-wrap: wrap; gap: var(--s-2) var(--s-3); padding: var(--s-2) var(--s-3);
+  }
+  .dock-meter { flex-basis: 100%; order: 3; }
+  .dock-name { max-width: 42vw; }
+  .dock-meta { white-space: normal; font-size: 11px; }
+
+  #toast-container {
+    left: var(--s-3); right: var(--s-3);
+    bottom: calc(var(--nav-h) + var(--safe-bottom) + var(--s-6));
+  }
+  .toast { max-width: none; }
+  .menu { min-width: 176px; }
+}
+
+/* ------------------------------------------------------------ ≤900：表格改卡片
+   存储表 7 列的最小宽度约 850px：769–900 之间（竖屏 iPad、窄窗口）桌面版式必然横向滚动，
+   所以卡片版式的断点比手机外壳（底部导航，≤768）更宽一档。 */
+@media (max-width: 900px) {
+  /* -------- 表格 → 双行卡片，信息合并而非消失 */
   .table.storage thead { display: none; }
   .table.storage, .table.storage tbody { display: block; }
   .table.storage tr.row {
@@ -883,7 +1006,9 @@ option { color: var(--text-1); background: var(--surface-2); }
       "cap   cap  cap"
       "speed speed speed";
     align-items: center; gap: 2px var(--s-3);
-    padding: var(--s-3); height: auto;
+    padding: var(--s-3);
+    /* 卡片高度由内容决定：写死 48px 会让四行内容溢出到下一行，整页叠字 */
+    height: auto; min-height: 0;
     border-bottom: 1px solid var(--border);
   }
   .table.storage tr.row > td { display: block; width: auto; padding: 0; border: 0; }
@@ -898,6 +1023,9 @@ option { color: var(--text-1); background: var(--surface-2); }
   .table.storage tr.error-row > td { display: block; padding: 0 var(--s-3) var(--s-3); }
   .table.storage tr.group-row > th, .table.storage tr.sub-row > th { display: block; height: auto; padding: var(--s-3); }
   .table.storage tr.sub-row > th { padding-left: var(--s-4); }
+  .panel { gap: var(--s-3); padding: var(--s-3) 0; }
+  .panel-form, .panel-side { min-width: 0; width: 100%; }
+  .cred-input { max-width: none; }
 
   .table.files thead { display: none; }
   .table.files, .table.files tbody { display: block; }
@@ -912,28 +1040,95 @@ option { color: var(--text-1); background: var(--surface-2); }
   .table.files td.c-meta { grid-area: meta; }
   .table.files td.c-act { grid-area: act; justify-self: end; }
   .frow .row-actions .btn { opacity: 1; }
-  .dock { flex-wrap: wrap; padding: var(--s-2) var(--s-3); }
-  .dock-meter { flex-basis: 100%; order: 3; }
-  .dock-name { max-width: 46vw; }
-  #toast-container { left: var(--s-3); right: var(--s-3); bottom: 68px; }
-  .toast { max-width: none; }
+
+  /* 会话表同样改卡片：4 个固定列宽在窄屏必然横向溢出 */
+  .table.sess thead { display: none; }
+  .table.sess, .table.sess tbody { display: block; }
+  .table.sess tr.frow {
+    display: grid; grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "verb name"
+      "vol  user";
+    align-items: center; gap: var(--s-1) var(--s-3);
+    padding: var(--s-2) var(--s-3); height: auto;
+    border-bottom: 1px solid var(--divider);
+  }
+  .table.sess tr.frow > td { display: block; width: auto; padding: 0; border: 0; }
+  .table.sess td.c-verb { grid-area: verb; align-self: start; }
+  .table.sess td.c-name { grid-area: name; }
+  .table.sess td.c-vol { grid-area: vol; }
+  .table.sess td.c-user { grid-area: user; justify-self: end; }
+  .sess .c-vol, .sess .c-user { width: auto; }
+  .sess-path, .cell-sub { word-break: break-all; }
 }
 
 @media (max-width: 420px) {
   .grid-2 { grid-template-columns: minmax(0, 1fr); }
   .span-2 { grid-column: auto; }
-  .kpi-value { font-size: 20px; }
+  .dock-name { max-width: 38vw; }
 }
 
-/* 触控：热区 ≥44，视觉尺寸不变 */
-@media (pointer: coarse) {
+/* ------------------------------------------------------------ 触控：热区 ≥44 */
+@media (pointer: coarse) and (min-width: 901px) {
+  /* 只给桌面表格行加高；≤900 的卡片版式高度由内容决定 */
   .table.storage tr.row { height: 48px; }
-  .btn { position: relative; }
-  .btn::before { content: ""; position: absolute; inset: -8px; }
-  .btn.s::before { inset: -6px; }
+}
+
+@media (pointer: coarse) {
+  /* 低于 16px 时 iOS Safari 会在聚焦后强行放大整页，用户被卡在放大视图里 */
+  input[type="text"], input[type="password"], input[type="number"], input[type="url"],
+  input[type="email"], input[type="search"], select, textarea {
+    font-size: 16px; min-height: 44px;
+  }
+  .btn { position: relative; height: 40px; }
+  .btn.s { height: 34px; }
+  .btn.icon.s { width: 34px; }
+  /* 热区靠伪元素外扩：外扩量必须小于按钮间距，否则相邻按钮互相吃掉对方的点击 */
+  .btn::before { content: ""; position: absolute; inset: -5px; }
+  .btn.s::before { inset: -5px; }
+  .row-actions { gap: 12px; }
+  /* 同一排按钮的间距必须容得下 ±5px 外扩，否则热区互相重叠、点左个却触发右个 */
+  .overlay-tools, .dock-actions, .panel-side, .panel-actions, .error-line .actions { gap: 12px; }
   .rail-item { min-height: 48px; }
-  .crumb, .menu button { position: relative; }
-  .crumb::before, .menu button::before { content: ""; position: absolute; inset: -6px; }
+  /* 整行型控件（菜单项、目录选择行）直接加高：它们上下相邻，用伪元素外扩会互相压住 */
+  .menu button { min-height: 44px; }
+  .drow { min-height: 44px; }
+  .segmented button { height: 40px; }
+  .note-fold > summary { min-height: 40px; }
+  .checkline input[type="checkbox"] { width: 20px; height: 20px; }
+  /* 面包屑与盘符按钮：只纵向外扩。横向外扩会盖住相邻项，面包屑换行时又会与上下行互吃点击 */
+  .crumb, .drive { position: relative; }
+  .crumbs { gap: 12px 2px; }
+  .crumb { min-height: 34px; }
+  .crumb::before, .drive::before { content: ""; position: absolute; inset: -5px 0; }
+  .drive { min-height: 32px; }
+}
+
+/* ------------------------------------------------------------ 横屏手机：可用高度不足
+   横屏只有 390px 高，竖屏那套「四行卡片 + 图标在上文字在下」会一屏放不下，
+   这里只压缩纵向：导航改图标与文字并排，卡片把容量与速率并成一行。 */
+@media (max-height: 480px) and (pointer: coarse) {
+  :root { --nav-h: 46px; }
+  .rail-item { flex-direction: row; justify-content: center; gap: var(--s-2); min-height: 40px; }
+  .rail-item .ic { font-size: 18px; }
+  .rail-label { font-size: 11px; }
+  .rail-badge { top: 2px; }
+  .topbar { height: calc(44px + var(--safe-top)); }
+  .view-region { padding: var(--s-2); }
+  /* 横幅与 KPI 各让出一行，首屏才装得下设备列表 */
+  .note-fold { flex-basis: auto; }
+  .kpi-strip { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  .kpi { flex-direction: row; align-items: baseline; gap: var(--s-2); padding: var(--s-2) var(--s-3); }
+  .kpi-sub { display: none; }
+  .table.storage tr.row {
+    grid-template-areas:
+      "drive name  act"
+      "drive fs    state"
+      "cap   cap   speed";
+    gap: 0 var(--s-3); padding: var(--s-2) var(--s-3);
+  }
+  .table.storage tr.row > td.c-cap, .table.storage tr.row > td.c-speed { padding-top: 0; }
+  .viewer-body video, .viewer-body img { max-height: 62vh; }
 }
 
 /* 降低动效偏好 */

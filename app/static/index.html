@@ -2,7 +2,9 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- viewport-fit=cover：安全区变量才有值（否则 iPhone 上恒为 0，底部导航会被指示条压住）
+       interactive-widget：Android Chrome 键盘弹出时压缩布局视口，整屏表单不会被键盘盖住（iOS 忽略此标记） -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
   <meta name="color-scheme" content="dark">
   <title>BlockUSBRead · 磁盘管理</title>
   <link rel="stylesheet" href="/static/styles.css">
@@ -58,7 +60,7 @@
     <div class="rail-group rail-foot">
       <button class="rail-item" id="btn-remote" type="button" hidden
               title="挂载远程 SFTP 存储">
-        <i class="ic ic-network"></i><span class="rail-label">添加远程存储</span>
+        <i class="ic ic-network"></i><span class="rail-label">远程</span>
       </button>
       <button class="rail-item" id="btn-collapse" type="button"
               aria-expanded="true" aria-controls="rail" title="折叠导航">
@@ -104,11 +106,6 @@
             <span class="kpi-label">写入</span>
             <strong class="kpi-value" data-kpi="write">0 B/s</strong>
             <span class="kpi-sub">全部卷合计</span>
-          </div>
-          <div class="kpi">
-            <span class="kpi-label">可用容量</span>
-            <strong class="kpi-value" data-kpi="avail">—</strong>
-            <span class="kpi-sub" data-kpi="total">—</span>
           </div>
           <div class="kpi">
             <span class="kpi-label">SFTP 连接</span>

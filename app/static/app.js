@@ -153,6 +153,11 @@ function renderShareBanner() {
     banner.innerHTML = "";
     return;
   }
+  // 手机上首屏要留给设备列表：长段说明折起来，桌面默认展开。
+  // 判定要和 styles.css 的手机版式断点一致：横屏手机宽度虽大，高度同样只够放一两行。
+  const phone = window.matchMedia("(max-width: 768px)").matches
+    || (window.matchMedia("(max-height: 480px)").matches
+        && window.matchMedia("(pointer: coarse)").matches);
   // 口令不下发也不上屏：它与登录管理页的口令是同一个，客户端里由用户自己填
   banner.innerHTML = `
     <span class="lead"><i class="ic ic-network"></i>SFTP 共享已就绪 · 账号与网页登录相同</span>
@@ -163,9 +168,10 @@ function renderShareBanner() {
       <button class="btn s js-copy" type="button" data-copy="${esc(s.username)}" data-label="账号">
         <i class="ic ic-copy"></i>复制</button>
       <span class="lbl">密码</span><code class="pw-hint">与登录管理页的相同</code></span>
-    <span class="note">挂载后的每个卷直接出现在 SFTP 根目录（以卷标命名，无卷标用盘 ID，重名自动加 -2、-3；
-      未挂载的卷不显示）。Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，
-      手机播放器（VLC 等）可直接添加 SFTP 源。</span>`;
+    <details class="note-fold"${phone ? "" : " open"}><summary>怎么用</summary>
+      <span class="note">挂载后的每个卷直接出现在 SFTP 根目录（以卷标命名，无卷标用盘 ID，重名自动加 -2、-3；
+        未挂载的卷不显示）。Windows 推荐 WinSCP / FileZilla，macOS / Linux 可用 sftp 命令或文件管理器，
+        手机播放器（VLC 等）可直接添加 SFTP 源。</span></details>`;
   banner.hidden = false;
 }
 
