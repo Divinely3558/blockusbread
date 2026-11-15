@@ -27,7 +27,7 @@ _LOWERS = "abcdefghijklmnopqrstuvwxyz"
 
 # C~Z 跳过 A、B（软驱传统）；单字母用完接 Aa~Zz
 POOL: list[str] = [c for c in _UPPERS if c not in "AB"] + [
-    u + l for u in _UPPERS for l in _LOWERS
+    hi + lo for hi in _UPPERS for lo in _LOWERS
 ]
 
 DEFAULT_PATH = DATA_DIR / "drive_letters.json"

@@ -37,7 +37,6 @@ from app.mounts.commands import (
     kill_fuse_daemons,
     mount_filesystem,
     probe_fstype,
-    probe_label,
     read_mountinfo,
     run_cryptsetup_close,
     run_cryptsetup_open,
@@ -45,7 +44,7 @@ from app.mounts.commands import (
     umount_filesystem,
     warm_up_device,
 )
-from app.mounts.letters import DriveLettersExhausted, DriveLetterRegistry
+from app.mounts.letters import DriveLetterRegistry, DriveLettersExhausted
 
 log = logging.getLogger("mount.manager")
 
@@ -338,10 +337,6 @@ class MountManager:
 
         inner = await probe_fstype(target)
         log.debug("卷 %s 内层文件系统：%s（引擎 %s）", part.path, inner or "未知", rt.engine)
-
-        # BitLocker 把卷标连同元数据一起加密，解锁后的明文目标上才有真实卷标；
-        # 探测不到回退盘 ID。挂载名在挂载时定死，挂载期内不再变化。
-        label = await probe_label(target)
 
         rt.state = VolumeState.MOUNTING
         await self._notify("mounting")
