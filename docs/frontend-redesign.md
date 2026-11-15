@@ -1,6 +1,5 @@
 # BlockUSBRead 前端重设计文档
 
-> 状态：**已实施**（v1.3.2 落地；§16 为桌面端渲染实测，§18 为真机反馈后的手机端适配记录）
 > 设计语言：`core/enterprise-ui`（骨架）+ `modes-color/dark-mode-minimal`（色彩制度）
 > 规范来源：`~/.qoder-cn/skills/ai-design-skills/references/{core/enterprise-ui,modes-color/dark-mode-minimal}.md`（已全文读取）
 > 范围：**仅前端** `app/static/{index.html,styles.css,app.js}`。后端 API、数据模型、SSE 协议一律不动。
@@ -452,7 +451,7 @@
 
 ---
 
-## 18. 手机端适配（真机反馈后追加）
+## 18. 手机端适配（v1.3.3，真机反馈后追加）
 
 **反馈**：「手机网页端没有很好的适配」。§16 那轮实测是在桌面 Chromium 里改视口宽度做的，全部通过 —— 说明**只改宽度的响应式实测测不到手机版式**，因为决定手机版式的不只是宽度，还有 `pointer: coarse`。
 
