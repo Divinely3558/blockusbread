@@ -6,16 +6,23 @@ import { state, findVolume, volumeDisplayName, writableTargets } from "./store.j
 import * as overlays from "./overlays.js";
 import { reloadJobs } from "./jobs.js";
 
-const fsState = { key: null, path: "", writable: false, entries: [], crumbs: [] };
+const fsState = {
+  key: null, path: "", writable: false, entries: [], crumbs: [],
+  selected: new Set(), lastCheckIndex: null,
+};
 const moveState = {
-  srcKey: null, srcPath: "", srcName: "", destKey: "", destPath: "",
+  srcKey: null, srcItems: [], destKey: "", destPath: "",
   srcWritable: false, op: "move", entries: [], crumbs: [], busy: false,
 };
 const renameState = { path: "", name: "" };
 
 export function init() {
   overlays.register("fs-layer", {
-    onClose: () => { fsState.key = null; fsState.entries = []; },
+    onClose: () => {
+      fsState.key = null;
+      fsState.entries = [];
+      clearSelection();
+    },
   });
   overlays.register("player-modal", { onClose: stopMedia });
   overlays.register("text-modal", { onClose: () => { $("#text-body").textContent = ""; } });
@@ -36,10 +43,15 @@ export function init() {
   });
   $("#fs-list").addEventListener("click", (e) => onFsClick(e));
   $("#fs-list").addEventListener("keydown", (e) => {
-    if (e.key !== "Enter") return;
+    if (e.key !== "Enter" || e.target.closest("input.fcheck")) return;
     const row = e.target.closest("tr.frow");
     if (row) activateRow(row);
   });
+  $("#fs-select-all").addEventListener("change", (e) => selectAll(e.target.checked));
+  $("#fs-select-all-bar").addEventListener("change", (e) => selectAll(e.target.checked));
+  $("#fs-copy-sel").addEventListener("click", () => openSelected("copy"));
+  $("#fs-move-sel").addEventListener("click", () => openSelected("move"));
+  $("#fs-clear-sel").addEventListener("click", clearSelection);
   $("#player-close").addEventListener("click", stopMedia);
   $("#move-keep").addEventListener("change", (e) => {
     moveState.op = e.target.checked ? "copy" : "move";
@@ -79,11 +91,12 @@ function closeBrowser() { overlays.close("fs-layer"); }
 
 async function loadFsDir(path) {
   if (!fsState.key) return;
+  clearSelection();
   const list = $("#fs-list");
   // 失败时保留上一份可用列表：正在卸载导致的读取失败不该把用户踢出抽屉
   const prev = { path: fsState.path, writable: fsState.writable, entries: fsState.entries, crumbs: fsState.crumbs };
   $("#fs-error").hidden = true;
-  list.innerHTML = `<tr class="placeholder loading"><td colspan="3">
+  list.innerHTML = `<tr class="placeholder loading"><td colspan="4">
     <i class="ic ic-loader ic-spin"></i>读取中…</td></tr>`;
   try {
     const data = await api("GET",
@@ -96,7 +109,7 @@ async function loadFsDir(path) {
   } catch (err) {
     Object.assign(fsState, prev);
     if (fsState.entries.length) renderFs();
-    else list.innerHTML = `<tr class="placeholder"><td colspan="3">${esc(err.message)}</td></tr>`;
+    else list.innerHTML = `<tr class="placeholder"><td colspan="4">${esc(err.message)}</td></tr>`;
     showFsError(err.message);
   }
 }
@@ -111,13 +124,18 @@ function renderFs() {
   paintCrumbs("#fs-crumbs", fsState.crumbs);
 
   const list = $("#fs-list");
+  const bar = $("#fs-select-bar");
   if (!fsState.entries.length) {
-    list.innerHTML = `<tr class="placeholder"><td colspan="3">空文件夹</td></tr>`;
+    list.innerHTML = `<tr class="placeholder"><td colspan="4">空文件夹</td></tr>`;
+    bar.hidden = true;
+    paintSelection();
     return;
   }
+  bar.hidden = false;
   const targets = writableTargets().length;
   list.innerHTML = fsState.entries.map((e) => {
-    const full = fsState.path ? `${fsState.path}/${e.name}` : e.name;
+    const full = entryPath(e);
+    const checked = fsState.selected.has(full);
     const icon = e.isDir ? "folder" : ({ video: "film", audio: "music", image: "image" }[fileKind(e.name)] || "file");
     const meta = e.isDir ? "文件夹" : `${humanSize(e.size)} · ${humanDate(e.mtime)}`;
     let actions = "";
@@ -132,14 +150,103 @@ function renderFs() {
         <button class="btn icon s danger" type="button" title="删除" data-act="delete"
         data-path="${esc(full)}" data-dir="${e.isDir ? 1 : 0}"><i class="ic ic-trash"></i></button>`;
     }
-    return `<tr class="frow${e.isDir ? " dir" : ""}" data-path="${esc(full)}" data-dir="${e.isDir ? 1 : 0}"
+    return `<tr class="frow${e.isDir ? " dir" : ""}${checked ? " selected" : ""}"
+        data-path="${esc(full)}" data-dir="${e.isDir ? 1 : 0}"
         tabindex="0" title="${esc(e.name)}">
+      <td class="c-check"><input type="checkbox" class="fs-check fcheck"
+        data-path="${esc(full)}" aria-label="选择 ${esc(e.name)}"${checked ? " checked" : ""}></td>
       <td class="c-name"><div class="cell-name">
         <i class="ic ic-${icon} fic fic-${icon}"></i><span class="txt">${esc(e.name)}</span></div></td>
       <td class="c-meta"><span class="f-meta">${esc(meta)}</span></td>
       <td class="c-act"><div class="row-actions">${actions}</div></td>
     </tr>`;
   }).join("");
+  paintSelection();
+}
+
+/* ============================================================ 多选 */
+
+function entryPath(entry) {
+  return fsState.path ? `${fsState.path}/${entry.name}` : entry.name;
+}
+
+function selectedItems() {
+  return fsState.entries
+    .filter((e) => fsState.selected.has(entryPath(e)))
+    .map((e) => ({ path: entryPath(e), name: e.name }));
+}
+
+function paintSelection() {
+  const total = fsState.entries.length;
+  let count = 0;
+  for (const cb of $("#fs-list").querySelectorAll("input.fcheck")) {
+    const on = fsState.selected.has(cb.dataset.path);
+    cb.checked = on;
+    if (on) count += 1;
+    const row = cb.closest("tr.frow");
+    if (row) row.classList.toggle("selected", on);
+  }
+
+  const master = $("#fs-select-all");
+  const barMaster = $("#fs-select-all-bar");
+  const all = total > 0 && count === total;
+  const partial = count > 0 && count < total;
+  for (const box of [master, barMaster]) {
+    box.checked = all;
+    box.indeterminate = partial;
+    box.disabled = total === 0;
+  }
+
+  $("#fs-select-count").textContent = count;
+  const hasTargets = writableTargets().length > 0;
+  $("#fs-copy-sel").disabled = count === 0 || !hasTargets;
+  const moveBtn = $("#fs-move-sel");
+  moveBtn.hidden = !fsState.writable;
+  moveBtn.disabled = count === 0 || !hasTargets;
+  $("#fs-clear-sel").disabled = count === 0;
+}
+
+function selectAll(on) {
+  for (const entry of fsState.entries) {
+    const path = entryPath(entry);
+    if (on) fsState.selected.add(path);
+    else fsState.selected.delete(path);
+  }
+  fsState.lastCheckIndex = null;
+  paintSelection();
+}
+
+function clearSelection() {
+  fsState.selected.clear();
+  fsState.lastCheckIndex = null;
+  paintSelection();
+}
+
+function toggleCheck(cb, event) {
+  const idx = fsState.entries.findIndex((e) => entryPath(e) === cb.dataset.path);
+  if (idx < 0) return;
+  const on = cb.checked;
+  const last = fsState.lastCheckIndex;
+  if (event.shiftKey && last !== null && last !== idx) {
+    const [from, to] = last < idx ? [last, idx] : [idx, last];
+    for (let i = from; i <= to; i += 1) {
+      const path = entryPath(fsState.entries[i]);
+      if (on) fsState.selected.add(path);
+      else fsState.selected.delete(path);
+    }
+  } else if (on) {
+    fsState.selected.add(cb.dataset.path);
+  } else {
+    fsState.selected.delete(cb.dataset.path);
+  }
+  fsState.lastCheckIndex = idx;
+  paintSelection();
+}
+
+function openSelected(wantOp) {
+  const items = selectedItems();
+  if (!items.length) return;
+  openMove(items, wantOp);
 }
 
 // 只读源只能复制出去；读写源默认移动（对话框内可勾选改为复制）
@@ -166,13 +273,19 @@ function paintCrumbs(sel, crumbs) {
 }
 
 function onFsClick(e) {
+  const check = e.target.closest("input.fcheck");
   const btn = e.target.closest("[data-act]");
   const row = e.target.closest("tr.frow");
+  if (check && row) {
+    e.stopPropagation();
+    toggleCheck(check, e);
+    return;
+  }
   if (btn && row) {
     e.stopPropagation();
     const { act, path, name, op } = btn.dataset;
     if (act === "download") downloadFile(path);
-    else if (act === "move") openMove(path, name, op || "move");
+    else if (act === "move") openMove([{ path, name }], op || "move");
     else if (act === "rename") openRename(path, name);
     else if (act === "delete") deleteEntry(path, btn.dataset.dir === "1");
     return;
@@ -363,7 +476,7 @@ async function submitRename() {
 
 /* ============================================================ 移动 / 复制 */
 
-async function openMove(path, name, wantOp) {
+async function openMove(items, wantOp) {
   const targets = writableTargets();
   if (!targets.length) {
     toast("没有可写的存储作为目标（本地 / 远程恒可写，外接需以读写模式挂载）", "err");
@@ -371,13 +484,14 @@ async function openMove(path, name, wantOp) {
   }
   const src = findVolume(fsState.key);
   moveState.srcKey = fsState.key;
-  moveState.srcPath = path;
-  moveState.srcName = name;
+  moveState.srcItems = items;
   moveState.srcWritable = src ? (!src.part || src.part.mode === "rw") : false;
   moveState.op = moveState.srcWritable ? wantOp : "copy";
   moveState.busy = false;
 
-  $("#move-src-name").textContent = name;
+  const label = items.length === 1 ? items[0].name : `${items.length} 个项目`;
+  $("#move-src-name").textContent = label;
+  $("#move-src-name").title = items.map((it) => it.name).join("\n");
   $("#move-error").hidden = true;
   const hint = $("#move-hint");
   hint.hidden = moveState.srcWritable;
@@ -406,6 +520,7 @@ async function openMove(path, name, wantOp) {
 
 function paintMoveMode() {
   const isCopy = moveState.op === "copy";
+  $("#move-src-kicker").textContent = isCopy ? "复制项目" : "移动项目";
   $("#move-heading").textContent = isCopy ? "复制到…" : "移动到…";
   $("#move-confirm-label").textContent = isCopy ? "开始复制" : "开始移动";
   const ic = $("#move-confirm").querySelector(".ic");
@@ -459,17 +574,43 @@ async function submitMove() {
   btn.disabled = true;
   const errBox = $("#move-error");
   errBox.hidden = true;
+  const items = moveState.srcItems;
+  const failures = [];
   try {
-    const res = await api("POST", `/api/volumes/${encodeURIComponent(moveState.srcKey)}/move`, {
-      path: moveState.srcPath,
-      destKey: moveState.destKey,
-      destPath: moveState.destPath,
-      mode: moveState.op,
-    });
+    for (const item of items) {
+      try {
+        await api("POST", `/api/volumes/${encodeURIComponent(moveState.srcKey)}/move`, {
+          path: item.path,
+          destKey: moveState.destKey,
+          destPath: moveState.destPath,
+          mode: moveState.op,
+        });
+      } catch (err) {
+        failures.push({ name: item.name, error: err.message });
+      }
+    }
+    if (failures.length === items.length) {
+      // 全部失败（空间不足 / 目标与源相同等）：留在对话框内展示原因
+      const shown = failures.slice(0, 3)
+        .map((f) => `${f.name}：${f.error}`).join("；");
+      errBox.textContent = failures.length > 3
+        ? `${shown}；等 ${failures.length} 项失败` : shown;
+      errBox.hidden = false;
+      moveState.busy = false;
+      btn.disabled = false;
+      return;
+    }
     overlays.close("move-modal");
-    toast(res.op === "copy"
-      ? `已开始后台复制「${moveState.srcName}」，源文件保留`
-      : `已开始后台移动「${moveState.srcName}」`, "ok");
+    const verb = moveState.op === "copy" ? "复制" : "移动";
+    const done = items.length - failures.length;
+    if (failures.length) {
+      toast(`已提交 ${done} 个${verb}任务，${failures.length} 项失败：`
+        + `${failures[0].name}（${failures[0].error}）`, "err");
+    } else {
+      toast(done === 1
+        ? `已开始后台${verb}「${items[0].name}」`
+        : `已开始后台${verb} ${done} 个项目`, "ok");
+    }
     loadFsDir(fsState.path);
     await reloadJobs();
   } catch (err) {

@@ -183,6 +183,24 @@
       </div>
     </div>
     <nav class="crumbs" id="fs-crumbs" aria-label="当前路径"></nav>
+    <div class="select-bar" id="fs-select-bar" hidden>
+      <label class="select-all">
+        <input type="checkbox" id="fs-select-all-bar" class="fs-check">
+        <span>全选</span>
+      </label>
+      <span class="select-count">已选 <strong id="fs-select-count">0</strong> 项</span>
+      <div class="select-actions">
+        <button class="btn s" id="fs-copy-sel" type="button">
+          <i class="ic ic-copy"></i>复制到…
+        </button>
+        <button class="btn s" id="fs-move-sel" type="button">
+          <i class="ic ic-move"></i>移动到…
+        </button>
+        <button class="btn icon s" id="fs-clear-sel" type="button" title="清除选择">
+          <i class="ic ic-close"></i>
+        </button>
+      </div>
+    </div>
     <div class="callout danger" id="fs-error" hidden role="alert">
       <i class="ic ic-alert"></i><span id="fs-error-msg"></span>
       <button class="btn s" type="button" id="fs-error-retry"><i class="ic ic-refresh"></i>重试</button>
@@ -193,9 +211,16 @@
     </div>
     <div class="overlay-body">
       <table class="table files">
-        <colgroup><col class="c-name"><col class="c-meta"><col class="c-act"></colgroup>
+        <colgroup><col class="c-check"><col class="c-name"><col class="c-meta"><col class="c-act"></colgroup>
         <thead>
-          <tr><th scope="col">名称</th><th scope="col" class="col-meta">大小 · 修改时间</th><th scope="col" class="ta-r">操作</th></tr>
+          <tr>
+            <th scope="col" class="c-check">
+              <input type="checkbox" id="fs-select-all" class="fs-check" aria-label="全选">
+            </th>
+            <th scope="col">名称</th>
+            <th scope="col" class="col-meta">大小 · 修改时间</th>
+            <th scope="col" class="ta-r">操作</th>
+          </tr>
         </thead>
         <tbody id="fs-list"></tbody>
       </table>
@@ -262,7 +287,7 @@
     </div>
     <div class="overlay-body">
       <div class="source-line">
-        <span class="kicker">移动项目</span>
+        <span class="kicker" id="move-src-kicker">移动项目</span>
         <span class="source-name"><i class="ic ic-file"></i><span id="move-src-name">—</span></span>
       </div>
       <div class="callout warning" id="move-hint" hidden></div>

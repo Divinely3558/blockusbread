@@ -685,12 +685,31 @@ tr.placeholder.loading > td { display: flex; align-items: center; justify-conten
 /* -------- 文件列表 */
 .table.files { table-layout: fixed; }
 .table.files thead th { top: 0; }
+.files .c-check { width: 38px; }
 .files .c-name { width: auto; }
 .files .c-meta { width: 200px; }
 .files .c-act  { width: 132px; }
+.fs-check {
+  width: 15px; height: 15px; margin: 0; flex: none;
+  accent-color: var(--accent); cursor: pointer; vertical-align: middle;
+}
+.select-bar {
+  display: flex; align-items: center; gap: var(--s-3); flex-wrap: wrap;
+  padding: var(--s-2) var(--s-5); border-bottom: 1px solid var(--divider); flex: none;
+}
+.select-bar[hidden] { display: none; }
+.select-all {
+  display: none; align-items: center; gap: var(--s-2);
+  font-size: 12px; color: var(--text-2); cursor: pointer;
+}
+.select-count { font: 400 12px/1 var(--mono); color: var(--text-3); }
+.select-count strong { color: var(--accent); font-weight: 600; }
+.select-actions { margin-left: auto; display: flex; align-items: center; gap: var(--s-2); }
 tr.frow { height: var(--row-h-compact); }
 tr.frow > td { border-bottom: 1px solid var(--divider); }
 tr.frow:hover { background: var(--hover); cursor: pointer; }
+tr.frow.selected { background: var(--surface-2); }
+tr.frow.selected:hover { background: var(--surface-3); }
 tr.frow .cell-name { font-weight: 400; }
 tr.frow.dir .cell-name { color: var(--text-1); font-weight: 500; }
 .fic { font-size: 15px; color: var(--text-3); }
@@ -1030,16 +1049,20 @@ option { color: var(--text-1); background: var(--surface-2); }
   .table.files thead { display: none; }
   .table.files, .table.files tbody { display: block; }
   .table.files tr.frow {
-    display: grid; grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-areas: "name act" "meta act";
+    display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "check name act" "check meta act";
     align-items: center; gap: 2px var(--s-3); padding: var(--s-2) var(--s-3); height: auto;
     border-bottom: 1px solid var(--divider);
   }
   .table.files tr.frow > td { display: block; width: auto; padding: 0; border: 0; }
+  .table.files td.c-check { grid-area: check; align-self: center; padding-right: var(--s-2); }
   .table.files td.c-name { grid-area: name; }
   .table.files td.c-meta { grid-area: meta; }
   .table.files td.c-act { grid-area: act; justify-self: end; }
   .frow .row-actions .btn { opacity: 1; }
+  .fs-check { width: 20px; height: 20px; }
+  .select-all { display: inline-flex; }
+  .select-bar { padding: var(--s-2) var(--s-3); }
 
   /* 会话表同样改卡片：4 个固定列宽在窄屏必然横向溢出 */
   .table.sess thead { display: none; }
