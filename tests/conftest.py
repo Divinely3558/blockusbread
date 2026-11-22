@@ -7,6 +7,12 @@ import json
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _disable_transfer_rate_limit(monkeypatch):
+    """单测关闭传输限速（生产默认 30 MiB/s），避免大文件用例超时。"""
+    monkeypatch.setenv("TRANSFER_RATE_LIMIT_MB", "0")
+
+
 @pytest.fixture
 def lsblk_payload() -> str:
     """三块盘：内置 SATA（应被过滤）、USB 单分区盘、无分区表 superfloppy 盘。"""

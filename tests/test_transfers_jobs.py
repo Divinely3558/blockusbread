@@ -93,3 +93,33 @@ async def _scenario_copy_dir(tmp_path):
 
 def test_copy_directory(tmp_path):
     asyncio.run(_scenario_copy_dir(tmp_path))
+
+
+def test_sftp_activity_detection(monkeypatch):
+    """SFTP 会话有 /proc io 增量视为活跃，停止 I/O 超过空闲阈值后恢复。"""
+    from app.transfers import jobs
+
+    clock = [1000.0]
+    counter = {"io": 1000}
+    monkeypatch.setattr(jobs.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(jobs, "_sshd_session_pids", lambda: [42])
+    monkeypatch.setattr(jobs, "_proc_io_bytes", lambda _pid: counter["io"])
+
+    activity = jobs._SftpActivity(idle_seconds=3.0, sample_seconds=0.5)
+    assert activity.active() is False
+    clock[0] += 0.5
+    counter["io"] += 4096
+    assert activity.active() is True
+    clock[0] += 10.0
+    assert activity.active() is False
+
+
+def test_rate_limiter_prefers_busy_rate_when_sftp_active():
+    from app.transfers import jobs
+
+    mb = 1024 * 1024
+    limiter = jobs._RateLimiter(30 * mb, 8 * mb)
+    limiter._activity.active = lambda: True
+    assert limiter._current_rate() == 8 * mb
+    limiter._activity.active = lambda: False
+    assert limiter._current_rate() == 30 * mb

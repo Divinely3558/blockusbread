@@ -17,6 +17,7 @@ import logging
 import math
 import os
 import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -35,6 +36,14 @@ _ETA_MIN_RATE = 1024  # B/s，低于该值视为速率不可信，不下发 ETA
 _ETA_RECOMPUTE_INTERVAL = 5.0  # 剩余时间 5 秒重算一次，避免每秒跳变
 _ETA_SMOOTH_TAU = 30.0  # 吞吐量 EMA 时间常数（秒）：越大越平滑、越小越跟手
 _ETA_WARMUP_SECONDS = 8.0  # 开局阶段（缓存预热 / 预分配未稳态）不参与统计
+# 传输限速（MiB/s，0 = 不限）：网页移动与 SFTP 会话共用同一块盘，
+# 全速传输会占满带宽并把机械盘打进寻道风暴，两边一起卡。
+_TRANSFER_RATE_ENV = "TRANSFER_RATE_LIMIT_MB"
+_DEFAULT_RATE_LIMIT_MB = 30.0  # 机械盘默认：给 SFTP / 网页留出约一半带宽
+_TRANSFER_BUSY_RATE_ENV = "TRANSFER_RATE_LIMIT_BUSY_MB"
+_DEFAULT_BUSY_RATE_LIMIT_MB = 8.0  # SFTP 正在读写时降到该值，让访问优先
+_ACCESS_IDLE_SECONDS = 3.0  # SFTP 停止 I/O 多久后恢复全速
+_ACCESS_SAMPLE_SECONDS = 0.5  # /proc 采样间隔
 
 
 class TransferConflict(RuntimeError):
@@ -268,8 +277,144 @@ def scan_tree(root: Path) -> tuple[int, int]:
     return total_bytes, total_files
 
 
-def _copy_file(src: Path, dst: Path, job: TransferJob) -> None:
-    """分块复制单文件：支持取消、字节进度、保留元数据。"""
+def _rate_limit_bps() -> float:
+    """读取限速配置（MiB/s，每次任务开始时生效，0 表示不限速）。"""
+    return _env_rate_bps(_TRANSFER_RATE_ENV, _DEFAULT_RATE_LIMIT_MB)
+
+
+def _busy_rate_limit_bps() -> float:
+    """SFTP 会话活跃时的限速（MiB/s，0 表示不做动态让路）。"""
+    return _env_rate_bps(_TRANSFER_BUSY_RATE_ENV, _DEFAULT_BUSY_RATE_LIMIT_MB)
+
+
+def _env_rate_bps(name: str, default_mb: float) -> float:
+    raw = os.getenv(name, "").strip()
+    try:
+        mb = float(raw) if raw else default_mb
+    except ValueError:
+        mb = default_mb
+    return max(mb, 0.0) * 1024 * 1024
+
+
+def _sshd_session_pids() -> list[int]:
+    """当前 SFTP 会话进程（sshd 会话子进程 / internal-sftp）的 PID。"""
+    pids: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cmd = (entry / "cmdline").read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", "ignore"
+            )
+        except OSError:
+            continue
+        if "[priv]" in cmd:
+            continue  # 每连接的权限分离监视进程不承载数据传输
+        if "internal-sftp" in cmd or "sftp-server" in cmd or cmd.startswith("sshd: "):
+            pids.append(int(entry.name))
+    return pids
+
+
+def _proc_io_bytes(pid: int) -> int | None:
+    """进程累计读写字节（/proc/<pid>/io 的 rchar + wchar）。"""
+    try:
+        with open(f"/proc/{pid}/io", encoding="utf-8") as f:
+            total = 0
+            for line in f:
+                if line.startswith(("rchar:", "wchar:")):
+                    total += int(line.split(":", 1)[1])
+            return total
+    except (OSError, ValueError):
+        return None
+
+
+class _SftpActivity:
+    """检测 SFTP 会话是否正在实际读写：按 PID 采样 /proc/<pid>/io 的增量。
+
+    会话断开/新建时 PID 与计数器都会重置换，因此按 PID 分别比较增量，
+    而不是比较全局累计值，避免误判。
+    """
+
+    def __init__(
+        self,
+        idle_seconds: float = _ACCESS_IDLE_SECONDS,
+        sample_seconds: float = _ACCESS_SAMPLE_SECONDS,
+    ) -> None:
+        self._idle = idle_seconds
+        self._sample = sample_seconds
+        self._last_poll = 0.0
+        self._prev: dict[int, int] = {}
+        self._last_active = float("-inf")
+
+    def active(self) -> bool:
+        now = time.monotonic()
+        if now - self._last_poll >= self._sample:
+            self._last_poll = now
+            moved = 0
+            current: dict[int, int] = {}
+            for pid in _sshd_session_pids():
+                total = _proc_io_bytes(pid)
+                if total is None:
+                    continue
+                current[pid] = total
+                prev = self._prev.get(pid)
+                if prev is not None and total > prev:
+                    moved += total - prev
+            self._prev = current
+            if moved > 0:
+                self._last_active = now
+        return now - self._last_active < self._idle
+
+
+class _RateLimiter:
+    """按整任务平均速率限速；SFTP 会话活跃时自动降到访问优先速率。"""
+
+    def __init__(self, normal_bps: float, busy_bps: float) -> None:
+        self._normal = normal_bps
+        # busy 未配置或不小于 normal 时视为不启用动态让路
+        if busy_bps <= 0 or (normal_bps > 0 and busy_bps >= normal_bps):
+            self._busy = normal_bps
+        else:
+            self._busy = busy_bps
+        self._activity = _SftpActivity()
+        # 下一块允许写完的时刻：空闲期间不累积"欠速"，限速值切换即时生效
+        self._deadline = 0.0
+
+    def _current_rate(self) -> float:
+        if self._normal <= 0:
+            return 0.0
+        return self._busy if self._activity.active() else self._normal
+
+    def consume(self, n: int, stop: threading.Event) -> None:
+        rate = self._current_rate()
+        if rate <= 0:
+            return
+        now = time.monotonic()
+        self._deadline = max(self._deadline, now) + n / rate
+        while True:
+            delay = self._deadline - time.monotonic()
+            if delay <= 0:
+                return
+            if stop.is_set():
+                raise _JobCanceled
+            time.sleep(min(delay, 0.2))
+
+
+def _lower_priority() -> None:
+    """把执行复制的线程降到最低 CPU / IO 优先级，给网页与 SFTP 会话让路。"""
+    with contextlib.suppress(OSError):
+        os.setpriority(os.PRIO_PROCESS, 0, 19)
+    with contextlib.suppress(OSError):
+        subprocess.run(
+            ["ionice", "-c", "2", "-n", "7", "-p", str(threading.get_native_id())],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+
+def _copy_file(src: Path, dst: Path, job: TransferJob, limiter: _RateLimiter | None = None) -> None:
+    """分块复制单文件：支持取消、字节进度、限速、保留元数据。"""
     dst.parent.mkdir(parents=True, exist_ok=True)
     with open(src, "rb") as fin, open(dst, "wb") as fout:
         while True:
@@ -280,6 +425,8 @@ def _copy_file(src: Path, dst: Path, job: TransferJob) -> None:
                 break
             fout.write(chunk)
             job.bytes_done += len(chunk)
+            if limiter is not None:
+                limiter.consume(len(chunk), job.cancel_event)
         fout.flush()
         os.fsync(fout.fileno())
     with contextlib.suppress(OSError):
@@ -313,6 +460,10 @@ def _do_transfer(job: TransferJob) -> None:
     job.bytes_total = total_bytes
     job.files_total = max(total_files, 1)
 
+    # 复制线程降级 + 整任务限速：与 SFTP / 网页争夺同一块盘时保留余量
+    _lower_priority()
+    limiter = _RateLimiter(_rate_limit_bps(), _busy_rate_limit_bps())
+
     dst = _unique_destination(dst_dir, job.name)
 
     def rollback() -> None:
@@ -341,11 +492,11 @@ def _do_transfer(job: TransferJob) -> None:
                         raise _JobCanceled
                     job.current = str(rel / fn) if str(rel) != "." else fn
                     _require_mounted(dst_dir)
-                    _copy_file(Path(dirpath) / fn, target_dir / fn, job)
+                    _copy_file(Path(dirpath) / fn, target_dir / fn, job, limiter)
         else:
             job.current = job.name
             _require_mounted(dst_dir)
-            _copy_file(src, dst, job)
+            _copy_file(src, dst, job, limiter)
     except BaseException:
         rollback()
         raise
