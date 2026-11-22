@@ -411,6 +411,7 @@ select {
 .freshness .ic { font-size: 13px; }
 .freshness[data-tone="warn"] { color: var(--warning); }
 .freshness[data-tone="off"] { color: var(--danger); }
+.app-version { font: 400 12px/1 var(--mono); color: var(--text-4); white-space: nowrap; }
 
 .view-region { flex: 1; width: 100%; max-width: var(--content-max); margin: 0 auto; padding: var(--s-6); }
 .view { display: flex; flex-direction: column; gap: var(--s-4); }
@@ -944,6 +945,7 @@ option { color: var(--text-1); background: var(--surface-2); }
   }
   .page-title { font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .freshness { display: none; }
+  .app-version { display: none; }
   #btn-refresh { width: 40px; padding: 0; }
   #btn-refresh span { display: none; }
 

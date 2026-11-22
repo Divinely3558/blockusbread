@@ -65,7 +65,10 @@ function bind() {
 async function loadVersion() {
   try {
     const h = await fetch("/health", { credentials: "same-origin" }).then((r) => r.json());
-    if (h && h.version) $("#login-version").textContent = h.version;
+    if (h && h.version) {
+      $("#login-version").textContent = h.version;
+      $("#app-version").textContent = h.version;
+    }
   } catch { /* 版本取不到保留占位 */ }
 }
 

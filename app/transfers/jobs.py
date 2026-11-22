@@ -23,6 +23,9 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.config import MOUNT_ROOT
+from app.mounts.commands import read_mountinfo
+
 log = logging.getLogger("transfers")
 
 _COPY_BUFSIZE = 1024 * 1024  # 1 MiB
@@ -41,6 +44,59 @@ class TransferConflict(RuntimeError):
 class _JobCanceled(Exception):
     """工作线程内的用户取消信号（不可使用 asyncio.CancelledError：
     那会在事件循环侧被当成任务取消并杀死常驻 worker）。"""
+
+
+class DestinationLost(RuntimeError):
+    """目标卷在任务执行期间消失（拔出/卸载），立即中止且绝不删除源。"""
+
+
+class SourceDeleteFailed(RuntimeError):
+    """目标副本已完整，仅删除源失败；绝不再回滚目标副本。"""
+
+
+def _volume_mount_for(path: Path) -> str | None:
+    """path 所属的活跃卷挂载点（/mnt/usb 下最长的挂载点）；不在卷上返回 None。
+
+    容器可写层同样能接受写入：盘拔出后挂载点只剩普通目录，若不校验，
+    任务会把数据静默写进容器本体、显示成功并删掉源，导致两边都找不到。
+    """
+    try:
+        target = str(path.resolve())
+    except OSError:
+        target = str(path)
+    try:
+        mounts = read_mountinfo()
+    except OSError:
+        return None
+    root = str(MOUNT_ROOT).rstrip("/")
+    best: str | None = None
+    for mi in mounts:
+        mp = mi.mount_point.rstrip("/") or "/"
+        if mp == root or not mp.startswith(root + "/"):
+            continue
+        if target == mp or target.startswith(mp + "/"):
+            if best is None or len(mp) > len(best):
+                best = mp
+    return best
+
+
+def _require_mounted(dst_dir: Path) -> None:
+    """目标目录必须仍位于活跃卷挂载点内，否则中止（不写入、不删源）。
+
+    仅对挂载根（/mnt/usb）下的路径强制校验：该范围之外是容器自身文件系统
+    （测试目录等），没有"卷被拔出"的概念，不做拦截。
+    """
+    root = str(MOUNT_ROOT).rstrip("/")
+    try:
+        target = str(dst_dir.resolve())
+    except OSError:
+        target = str(dst_dir)
+    if target != root and not target.startswith(root + "/"):
+        return
+    if _volume_mount_for(dst_dir) is None:
+        raise DestinationLost(
+            "目标存储已断开（挂载点已消失），传输中止，源文件未删除"
+        )
 
 
 def paths_overlap(key_a: str, abs_a: Path, key_b: str, abs_b: Path) -> bool:
@@ -232,10 +288,16 @@ def _copy_file(src: Path, dst: Path, job: TransferJob) -> None:
 
 
 def _do_transfer(job: TransferJob) -> None:
-    """阻塞式执行（工作线程内）。成功返回；取消抛 _JobCanceled；其他错误抛 OSError。"""
+    """阻塞式执行（工作线程内）。成功返回；取消抛 _JobCanceled；其他错误抛异常。"""
     src = Path(job.src_abs)
     dst_dir = Path(job.dst_dir_abs)
     same_volume = job.src_key == job.dst_key
+
+    if not src.exists() and not src.is_symlink():
+        raise FileNotFoundError("源文件或目录已不存在（所在卷可能已拔出）")
+    # 目标卷必须仍是活跃挂载：盘拔出后挂载点只剩普通目录，写入会静默落进
+    # 容器可写层，任务却显示成功并删掉源，造成两边都找不到文件。
+    _require_mounted(dst_dir)
 
     if same_volume and job.op == "move":
         # 同卷移动：原子重命名，瞬间完成（同卷复制走下面的真实拷贝）
@@ -270,6 +332,7 @@ def _do_transfer(job: TransferJob) -> None:
                     raise _JobCanceled
                 rel = Path(dirpath).relative_to(src)
                 target_dir = dst / rel
+                _require_mounted(dst_dir)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 for dn in dirnames:
                     (target_dir / dn).mkdir(exist_ok=True)
@@ -277,23 +340,32 @@ def _do_transfer(job: TransferJob) -> None:
                     if job.cancel_event.is_set():
                         raise _JobCanceled
                     job.current = str(rel / fn) if str(rel) != "." else fn
+                    _require_mounted(dst_dir)
                     _copy_file(Path(dirpath) / fn, target_dir / fn, job)
         else:
             job.current = job.name
+            _require_mounted(dst_dir)
             _copy_file(src, dst, job)
-
-        if job.cancel_event.is_set():
-            raise _JobCanceled
-
-        # 复制完整成功后，move 才删除源；copy / 只读源保留
-        if job.op == "move":
-            if src.is_symlink() or src.is_file():
-                src.unlink()
-            else:
-                shutil.rmtree(src)
     except BaseException:
         rollback()
         raise
+
+    # 复制已完整：从这里开始不再回滚目标，目标副本必须保住
+    if job.op != "move":
+        return
+    if job.cancel_event.is_set():
+        raise _JobCanceled
+    # 目标盘在复制完成后掉线时不删源（数据可能未真正落盘）
+    _require_mounted(dst_dir)
+    try:
+        if src.is_symlink() or src.is_file():
+            src.unlink()
+        else:
+            shutil.rmtree(src)
+    except OSError as exc:
+        raise SourceDeleteFailed(
+            f"目标副本已完整，但删除源失败：{exc}（源可能残留部分文件）"
+        ) from exc
 
 
 class TransferManager:
