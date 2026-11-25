@@ -219,7 +219,8 @@ function openEvents() {
   es.addEventListener("jobs", (ev) => {
     if (es !== evtSource) return;
     try {
-      applyJobs(JSON.parse(ev.data)?.jobs || []);
+      const payload = JSON.parse(ev.data) || {};
+      applyJobs(payload.jobs || [], payload.turbo);
     } catch { /* 坏消息忽略 */ }
   });
   es.onerror = () => {

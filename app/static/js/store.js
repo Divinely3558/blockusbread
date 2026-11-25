@@ -11,6 +11,7 @@ export const state = {
   rememberEnabled: false,
   share: null,
   jobs: [],
+  turbo: false,
   sessions: null,
   rates: {},
   usage: {},
@@ -52,12 +53,13 @@ export async function refreshVolumes() {
 export async function refreshJobs() {
   try {
     const data = await api("GET", "/api/jobs");
-    applyJobs(data.jobs || []);
+    applyJobs(data.jobs || [], data.turbo);
   } catch { /* 未登录等场景忽略 */ }
 }
 
-export function applyJobs(jobs) {
+export function applyJobs(jobs, turbo) {
   state.jobs = jobs;
+  if (turbo !== undefined) state.turbo = !!turbo;
   emit("jobs");
 }
 

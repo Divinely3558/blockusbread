@@ -44,6 +44,7 @@ _TRANSFER_BUSY_RATE_ENV = "TRANSFER_RATE_LIMIT_BUSY_MB"
 _DEFAULT_BUSY_RATE_LIMIT_MB = 8.0  # SFTP 正在读写时降到该值，让访问优先
 _ACCESS_IDLE_SECONDS = 3.0  # SFTP 停止 I/O 多久后恢复全速
 _ACCESS_SAMPLE_SECONDS = 0.5  # /proc 采样间隔
+_TURBO_IDLE_SECONDS = 300.0  # 极速模式：队列空闲 5 分钟后自动关闭，避免忘记后长期无保护
 
 
 class TransferConflict(RuntimeError):
@@ -367,20 +368,31 @@ class _SftpActivity:
 
 
 class _RateLimiter:
-    """按整任务平均速率限速；SFTP 会话活跃时自动降到访问优先速率。"""
+    """按整任务平均速率限速；SFTP 会话活跃时自动降到访问优先速率。
 
-    def __init__(self, normal_bps: float, busy_bps: float) -> None:
+    turbo 置位时完全不限速（也不做 SFTP 活跃采样），用于「极速模式」。
+    """
+
+    def __init__(
+        self,
+        normal_bps: float,
+        busy_bps: float,
+        turbo: threading.Event | None = None,
+    ) -> None:
         self._normal = normal_bps
         # busy 未配置或不小于 normal 时视为不启用动态让路
         if busy_bps <= 0 or (normal_bps > 0 and busy_bps >= normal_bps):
             self._busy = normal_bps
         else:
             self._busy = busy_bps
+        self._turbo = turbo
         self._activity = _SftpActivity()
         # 下一块允许写完的时刻：空闲期间不累积"欠速"，限速值切换即时生效
         self._deadline = 0.0
 
     def _current_rate(self) -> float:
+        if self._turbo is not None and self._turbo.is_set():
+            return 0.0
         if self._normal <= 0:
             return 0.0
         return self._busy if self._activity.active() else self._normal
@@ -434,7 +446,7 @@ def _copy_file(src: Path, dst: Path, job: TransferJob, limiter: _RateLimiter | N
     job.files_done += 1
 
 
-def _do_transfer(job: TransferJob) -> None:
+def _do_transfer(job: TransferJob, turbo: threading.Event | None = None) -> None:
     """阻塞式执行（工作线程内）。成功返回；取消抛 _JobCanceled；其他错误抛异常。"""
     src = Path(job.src_abs)
     dst_dir = Path(job.dst_dir_abs)
@@ -460,9 +472,12 @@ def _do_transfer(job: TransferJob) -> None:
     job.bytes_total = total_bytes
     job.files_total = max(total_files, 1)
 
-    # 复制线程降级 + 整任务限速：与 SFTP / 网页争夺同一块盘时保留余量
-    _lower_priority()
-    limiter = _RateLimiter(_rate_limit_bps(), _busy_rate_limit_bps())
+    # 复制线程降级 + 整任务限速：与 SFTP / 网页争夺同一块盘时保留余量。
+    # 极速模式（turbo 已置位）跳过降级与限速，让传输独占带宽。
+    turbo_on = turbo is not None and turbo.is_set()
+    if not turbo_on:
+        _lower_priority()
+    limiter = _RateLimiter(_rate_limit_bps(), _busy_rate_limit_bps(), turbo)
 
     dst = _unique_destination(dst_dir, job.name)
 
@@ -528,13 +543,61 @@ class TransferManager:
         self._wake = asyncio.Event()
         self._worker: asyncio.Task | None = None
         self._lock = asyncio.Lock()
+        # 极速模式开关：工作线程直接读取，置位时不限速、不降优先级
+        self._turbo = threading.Event()
+        self._turbo_idle: asyncio.Task | None = None
+
+    @property
+    def turbo_enabled(self) -> bool:
+        return self._turbo.is_set()
+
+    async def set_turbo(self, enabled: bool) -> bool:
+        """切换极速模式并广播；队列空闲时开启会在 5 分钟后自动关闭。"""
+        if enabled:
+            self._turbo.set()
+        else:
+            self._turbo.clear()
+        self._arm_turbo_idle_timer()
+        await self._publish()
+        return self._turbo.is_set()
+
+    def _cancel_turbo_idle_timer(self) -> None:
+        if self._turbo_idle is not None:
+            self._turbo_idle.cancel()
+            self._turbo_idle = None
+
+    def _arm_turbo_idle_timer(self) -> None:
+        """仅在极速模式开启且没有任何排队 / 进行中任务时计时。"""
+        self._cancel_turbo_idle_timer()
+        if not self._turbo.is_set() or self._has_active_jobs():
+            return
+        self._turbo_idle = asyncio.create_task(
+            self._turbo_idle_watch(), name="turbo-idle"
+        )
+
+    def _has_active_jobs(self) -> bool:
+        return any(j.status in ("queued", "running") for j in self._jobs.values())
+
+    async def _turbo_idle_watch(self) -> None:
+        try:
+            await asyncio.sleep(_TURBO_IDLE_SECONDS)
+        except asyncio.CancelledError:
+            return
+        self._turbo_idle = None
+        if not self._turbo.is_set() or self._has_active_jobs():
+            return
+        self._turbo.clear()
+        log.info("极速模式已自动关闭：队列空闲超过 %d 秒", int(_TURBO_IDLE_SECONDS))
+        await self._publish()
 
     async def start(self) -> None:
         if self._worker is None:
             self._worker = asyncio.create_task(self._consume(), name="transfer-worker")
 
     async def _publish(self) -> None:
-        await self._bus.publish("jobs", {"jobs": self.snapshot()})
+        await self._bus.publish(
+            "jobs", {"jobs": self.snapshot(), "turbo": self._turbo.is_set()}
+        )
 
     async def submit(
         self,
@@ -623,8 +686,12 @@ class TransferManager:
                 if job is None:
                     break
                 await self._run(job)
+            # 队列空了：极速模式若仍开启，开始 5 分钟空闲计时
+            self._arm_turbo_idle_timer()
 
     async def _run(self, job: TransferJob) -> None:
+        # 有任务开始就取消空闲计时，避免传输进行中被"自动关闭"
+        self._cancel_turbo_idle_timer()
         job.status = "running"
         job.started_at = time.time()
         job.record_sample(time.monotonic())
@@ -632,7 +699,7 @@ class TransferManager:
 
         ticker = asyncio.create_task(self._tick_loop())
         try:
-            await asyncio.to_thread(_do_transfer, job)
+            await asyncio.to_thread(_do_transfer, job, self._turbo)
             job.status = "done"
             log.info("传输完成：%s %s -> %s（%s）",
                      job.op, job.src_rel, job.dst_key, job.name)

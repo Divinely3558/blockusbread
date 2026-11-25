@@ -134,11 +134,19 @@
       <section id="view-jobs" class="view" data-view="jobs" hidden>
         <div class="view-head">
           <p class="view-note">任务在设备内部执行，关闭页面或弹出无关硬盘都不会中断；相关硬盘需等任务完成才能弹出。</p>
+          <button class="btn s btn-turbo" id="btn-turbo" type="button" aria-pressed="false"
+                  title="当前限速 30 MiB/s，SFTP 读写时自动降速；点击开启极速模式">
+            <i class="ic ic-bolt"></i><span>极速模式</span>
+          </button>
           <div class="segmented" id="jobs-filter" role="group" aria-label="任务筛选">
             <button class="active" type="button" data-filter="all">全部</button>
             <button type="button" data-filter="active">进行中</button>
             <button type="button" data-filter="finished">已结束</button>
           </div>
+        </div>
+        <div class="callout danger turbo-note" id="turbo-note" hidden>
+          <span class="lead"><i class="ic ic-alert"></i>极速模式已开启</span>
+          <span class="note">传输将占满磁盘带宽、不再为 SFTP 让路；与 SFTP 同时使用可能两边都变慢。队列空闲 5 分钟后自动关闭。</span>
         </div>
         <div id="jobs-body"></div>
       </section>

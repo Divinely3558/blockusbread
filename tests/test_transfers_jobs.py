@@ -123,3 +123,74 @@ def test_rate_limiter_prefers_busy_rate_when_sftp_active():
     assert limiter._current_rate() == 8 * mb
     limiter._activity.active = lambda: False
     assert limiter._current_rate() == 30 * mb
+
+
+def test_rate_limiter_skips_when_turbo_enabled():
+    """极速模式置位后不再等待：16 MiB 应立即写完，而不是按 8 MiB/s 拖 2 秒。"""
+    import threading
+    import time
+
+    from app.transfers import jobs
+
+    mb = 1024 * 1024
+    turbo = threading.Event()
+    turbo.set()
+    limiter = jobs._RateLimiter(30 * mb, 8 * mb, turbo)
+    limiter._activity.active = lambda: True
+    start = time.monotonic()
+    limiter.consume(16 * mb, threading.Event())
+    assert time.monotonic() - start < 0.05
+
+
+async def _scenario_turbo(tmp_path):
+    from app.transfers import jobs
+
+    mgr = TransferManager(_FakeBus())
+    await mgr.start()
+    old_idle = jobs._TURBO_IDLE_SECONDS
+    jobs._TURBO_IDLE_SECONDS = 0.05
+    try:
+        assert mgr.turbo_enabled is False
+        assert await mgr.set_turbo(True) is True
+        assert mgr.turbo_enabled is True
+        assert mgr._bus.events[-1][1]["turbo"] is True
+        # 幂等：重复开启仍是开启
+        assert await mgr.set_turbo(True) is True
+        # 队列空闲时到点自动关闭
+        await asyncio.sleep(0.15)
+        assert mgr.turbo_enabled is False, "队列空闲超过阈值后应自动关闭极速模式"
+        assert await mgr.set_turbo(False) is False
+    finally:
+        jobs._TURBO_IDLE_SECONDS = old_idle
+        mgr._cancel_turbo_idle_timer()
+        mgr._worker.cancel()
+
+
+def test_turbo_toggle_and_auto_off(tmp_path):
+    asyncio.run(_scenario_turbo(tmp_path))
+
+
+def test_turbo_api_toggles_and_reports_state():
+    """接口切换后 /api/jobs 与 SSE 快照都带 turbo 字段。"""
+    from types import SimpleNamespace
+
+    from fastapi.testclient import TestClient
+
+    import app.main as main
+
+    mgr = TransferManager(_FakeBus())
+    main.app.state.sessions = SimpleNamespace(
+        resolve=lambda request: {"username": "tester"}
+    )
+    main.app.state.transfers = mgr
+    client = TestClient(main.app)
+
+    resp = client.post("/api/transfers/turbo", json={"enabled": True})
+    assert resp.status_code == 200
+    assert resp.json()["turbo"] is True
+    assert mgr.turbo_enabled is True
+    assert client.get("/api/jobs").json()["turbo"] is True
+
+    resp = client.post("/api/transfers/turbo", json={"enabled": False})
+    assert resp.json()["turbo"] is False
+    assert client.get("/api/jobs").json()["turbo"] is False

@@ -151,6 +151,7 @@ code, .mono, pre { font-family: var(--mono); font-size: 12px; }
 .ic-disk, .ic-local, .ic-remote, .ic-external { width: 1.05em; height: 1.05em; }
 .ic-disk        { -webkit-mask-image: url(/static/icons/icon-disk.svg);        mask-image: url(/static/icons/icon-disk.svg); }
 .ic-refresh     { -webkit-mask-image: url(/static/icons/icon-refresh.svg);     mask-image: url(/static/icons/icon-refresh.svg); }
+.ic-bolt        { -webkit-mask-image: url(/static/icons/icon-bolt.svg);        mask-image: url(/static/icons/icon-bolt.svg); }
 .ic-eject       { -webkit-mask-image: url(/static/icons/icon-eject.svg);       mask-image: url(/static/icons/icon-eject.svg); }
 .ic-copy        { -webkit-mask-image: url(/static/icons/icon-copy.svg);        mask-image: url(/static/icons/icon-copy.svg); }
 .ic-folder      { -webkit-mask-image: url(/static/icons/icon-folder.svg);      mask-image: url(/static/icons/icon-folder.svg); }
@@ -223,6 +224,24 @@ code, .mono, pre { font-family: var(--mono); font-size: 12px; }
 
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-3); }
 .btn.ghost:hover { background: var(--hover); color: var(--text-1); }
+
+/* 极速模式：胶囊按钮（两端全圆角）。未开启为绿色描边，开启后转为红色实心（醒目警示） */
+.btn-turbo {
+  border-radius: 999px;
+  /* 胶囊两端是半圆（半径 14px），左右留白需大于半径才不被弧线挤压 */
+  padding: 0 var(--s-4);
+  color: var(--success); border-color: rgba(52, 211, 153, .4); background: transparent;
+}
+.btn-turbo:hover { background: var(--success-bg); border-color: var(--success); color: var(--success); }
+.btn-turbo .ic { font-size: 14px; }
+.btn-turbo[aria-pressed="true"] {
+  background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18);
+}
+.btn-turbo[aria-pressed="true"]:hover {
+  background: var(--danger); border-color: var(--danger); color: #fff; filter: brightness(1.08);
+}
+.btn-turbo[aria-pressed="true"]:active { filter: brightness(.94); }
 
 /* ------------------------------------------------------------ 表单 */
 .field { display: block; margin-bottom: var(--s-3); }
@@ -948,6 +967,9 @@ option { color: var(--text-1); background: var(--surface-2); }
   .app-version { display: none; }
   #btn-refresh { width: 40px; padding: 0; }
   #btn-refresh span { display: none; }
+  /* 极速模式按钮手机上只留图标，避免挤压筛选组 */
+  .btn-turbo span { display: none; }
+  .btn-turbo { width: 34px; padding: 0; }
 
   /* 手机首屏留给设备列表：4 张 KPI 卡排成 2×2，比 3+1 少一张孤卡 */
   .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

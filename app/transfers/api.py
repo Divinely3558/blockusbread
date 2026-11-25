@@ -152,7 +152,24 @@ async def create_move(key: str, body: MoveBody, request: Request):
 
 @router.get("/jobs")
 async def list_jobs(request: Request):
-    return {"jobs": get_transfers(request).snapshot()}
+    mgr = get_transfers(request)
+    return {"jobs": mgr.snapshot(), "turbo": mgr.turbo_enabled}
+
+
+class TurboBody(BaseModel):
+    enabled: bool
+
+
+@router.post("/transfers/turbo")
+async def set_turbo(
+    body: TurboBody,
+    request: Request,
+    session: dict = Depends(current_session),
+):
+    """极速模式开关：开启后传输不限速、不为 SFTP 让路。"""
+    enabled = await get_transfers(request).set_turbo(body.enabled)
+    log.info("%s %s极速模式", session["username"], "开启" if enabled else "关闭")
+    return {"ok": True, "turbo": enabled}
 
 
 @router.post("/jobs/{job_id}/cancel")

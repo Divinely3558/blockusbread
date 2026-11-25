@@ -35,7 +35,7 @@ wheels = [
 
 [[package]]
 name = "blockusbread"
-version = "26.11.22b"
+version = "26.11.25a"
 source = { virtual = "." }
 dependencies = [
     { name = "cryptography" },

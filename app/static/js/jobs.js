@@ -18,6 +18,7 @@ let filter = "all";
 export function init() {
   on("jobs", render);
   document.addEventListener("click", onClick);
+  $("#btn-turbo").addEventListener("click", toggleTurbo);
   $("#jobs-filter").addEventListener("click", (e) => {
     const btn = e.target.closest("button[data-filter]");
     if (!btn) return;
@@ -39,9 +40,40 @@ function visibleJobs() {
 }
 
 export function render() {
+  renderTurbo();
   renderList();
   renderDock();
   renderBadges();
+}
+
+/* 极速模式：未开启绿色（限速 + 为 SFTP 让路），开启后红色（独占带宽） */
+function renderTurbo() {
+  const btn = $("#btn-turbo");
+  if (!btn) return;
+  const on = !!state.turbo;
+  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.title = on
+    ? "已关闭限速与动态让路，传输将占满磁盘带宽；与 SFTP 同时使用可能变慢；点击关闭"
+    : "当前限速传输，SFTP 读写时自动降速；点击开启极速模式（队列空闲 5 分钟后自动关闭）";
+  const note = $("#turbo-note");
+  if (note) note.hidden = !on;
+}
+
+async function toggleTurbo() {
+  const btn = $("#btn-turbo");
+  const next = !state.turbo;
+  btn.disabled = true;
+  try {
+    const data = await api("POST", "/api/transfers/turbo", { enabled: next });
+    state.turbo = !!data.turbo;
+    renderTurbo();
+    toast(data.turbo ? "极速模式已开启，传输将独占带宽" : "极速模式已关闭，恢复限速", data.turbo ? "ok" : "");
+    await refreshJobs();
+  } catch (err) {
+    toast(err.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function renderList() {
