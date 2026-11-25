@@ -46,15 +46,18 @@ export function render() {
   renderBadges();
 }
 
-/* 极速模式：未开启绿色（限速 + 为 SFTP 让路），开启后红色（独占带宽） */
+/* 极速模式开关：均衡模式（灰色、旋钮在左，限速 + 为 SFTP 让路）/ 极速模式（红色、旋钮在右，独占带宽） */
 function renderTurbo() {
   const btn = $("#btn-turbo");
   if (!btn) return;
   const on = !!state.turbo;
-  btn.setAttribute("aria-pressed", on ? "true" : "false");
+  btn.setAttribute("aria-checked", on ? "true" : "false");
+  btn.setAttribute("aria-label", on ? "极速模式开关，当前极速模式" : "极速模式开关，当前均衡模式");
   btn.title = on
-    ? "已关闭限速与动态让路，传输将占满磁盘带宽；与 SFTP 同时使用可能变慢；点击关闭"
-    : "当前限速传输，SFTP 读写时自动降速；点击开启极速模式（队列空闲 5 分钟后自动关闭）";
+    ? "极速模式：已关闭限速与动态让路，传输将占满磁盘带宽；与 SFTP 同时使用可能变慢；点击切回均衡模式"
+    : "均衡模式：限速 30 MiB/s，SFTP 读写时自动降到 8 MiB/s；点击切换为极速模式";
+  const label = btn.querySelector(".turbo-label");
+  if (label) label.textContent = on ? "极速模式" : "均衡模式";
   const note = $("#turbo-note");
   if (note) note.hidden = !on;
 }
@@ -67,7 +70,7 @@ async function toggleTurbo() {
     const data = await api("POST", "/api/transfers/turbo", { enabled: next });
     state.turbo = !!data.turbo;
     renderTurbo();
-    toast(data.turbo ? "极速模式已开启，传输将独占带宽" : "极速模式已关闭，恢复限速", data.turbo ? "ok" : "");
+    toast(data.turbo ? "已切换为极速模式，传输将独占带宽" : "已切换为均衡模式，恢复限速并为 SFTP 让路", data.turbo ? "ok" : "");
     await refreshJobs();
   } catch (err) {
     toast(err.message, "err");

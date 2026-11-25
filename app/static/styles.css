@@ -225,23 +225,41 @@ code, .mono, pre { font-family: var(--mono); font-size: 12px; }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--text-3); }
 .btn.ghost:hover { background: var(--hover); color: var(--text-1); }
 
-/* 极速模式：胶囊按钮（两端全圆角）。未开启为绿色描边，开启后转为红色实心（醒目警示） */
-.btn-turbo {
+/* 极速模式：Switch 开关。旋钮在左 + 灰色轨道 = 未开启（限速、为 SFTP 让路）；
+   旋钮在右 + 红色轨道 = 已开启（独占带宽，醒目警示） */
+.turbo-switch {
+  display: inline-flex; align-items: center; gap: var(--s-2);
+  min-height: 28px; padding: 0;
+  font: 500 13px/1 inherit; font-family: inherit; color: var(--text-2);
+  background: none; border: 0; cursor: pointer;
+  transition: color var(--t-fast) var(--ease);
+}
+.turbo-switch:hover { color: var(--text-1); }
+.turbo-switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; border-radius: var(--radius-sm); }
+.turbo-switch[disabled] { cursor: progress; opacity: .7; }
+
+.turbo-track {
+  position: relative; flex: none;
+  width: 40px; height: 22px;
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
   border-radius: 999px;
-  /* 胶囊两端是半圆（半径 14px），左右留白需大于半径才不被弧线挤压 */
-  padding: 0 var(--s-4);
-  color: var(--success); border-color: rgba(52, 211, 153, .4); background: transparent;
+  transition: background var(--t-base) var(--ease), border-color var(--t-base) var(--ease);
 }
-.btn-turbo:hover { background: var(--success-bg); border-color: var(--success); color: var(--success); }
-.btn-turbo .ic { font-size: 14px; }
-.btn-turbo[aria-pressed="true"] {
-  background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .18);
+.turbo-knob {
+  position: absolute; top: 2px; left: 2px;
+  display: flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  color: var(--text-4); background: #fff;
+  border-radius: 999px; box-shadow: 0 1px 2px rgba(0, 0, 0, .35);
+  transition: transform var(--t-base) var(--ease), color var(--t-fast) var(--ease);
 }
-.btn-turbo[aria-pressed="true"]:hover {
-  background: var(--danger); border-color: var(--danger); color: #fff; filter: brightness(1.08);
-}
-.btn-turbo[aria-pressed="true"]:active { filter: brightness(.94); }
+.turbo-knob .ic { font-size: 10px; }
+.turbo-label { white-space: nowrap; }
+
+.turbo-switch[aria-checked="true"] { color: var(--danger); }
+.turbo-switch[aria-checked="true"] .turbo-track { background: var(--danger); border-color: var(--danger); }
+.turbo-switch[aria-checked="true"] .turbo-knob { transform: translateX(18px); color: var(--danger); }
 
 /* ------------------------------------------------------------ 表单 */
 .field { display: block; margin-bottom: var(--s-3); }
@@ -967,9 +985,9 @@ option { color: var(--text-1); background: var(--surface-2); }
   .app-version { display: none; }
   #btn-refresh { width: 40px; padding: 0; }
   #btn-refresh span { display: none; }
-  /* 极速模式按钮手机上只留图标，避免挤压筛选组 */
-  .btn-turbo span { display: none; }
-  .btn-turbo { width: 34px; padding: 0; }
+  /* 极速模式开关手机上只留轨道，隐藏文字避免挤压筛选组；高度撑到 40px 便于点按 */
+  .turbo-switch { min-height: 40px; }
+  .turbo-label { display: none; }
 
   /* 手机首屏留给设备列表：4 张 KPI 卡排成 2×2，比 3+1 少一张孤卡 */
   .kpi-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }

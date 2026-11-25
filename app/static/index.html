@@ -134,9 +134,10 @@
       <section id="view-jobs" class="view" data-view="jobs" hidden>
         <div class="view-head">
           <p class="view-note">任务在设备内部执行，关闭页面或弹出无关硬盘都不会中断；相关硬盘需等任务完成才能弹出。</p>
-          <button class="btn s btn-turbo" id="btn-turbo" type="button" aria-pressed="false"
-                  title="当前限速 30 MiB/s，SFTP 读写时自动降速；点击开启极速模式">
-            <i class="ic ic-bolt"></i><span>极速模式</span>
+          <button class="turbo-switch" id="btn-turbo" type="button" role="switch" aria-checked="false"
+                  title="均衡模式：限速 30 MiB/s，SFTP 读写时自动降到 8 MiB/s；点击切换为极速模式">
+            <span class="turbo-track"><span class="turbo-knob"><i class="ic ic-bolt"></i></span></span>
+            <span class="turbo-label">均衡模式</span>
           </button>
           <div class="segmented" id="jobs-filter" role="group" aria-label="任务筛选">
             <button class="active" type="button" data-filter="all">全部</button>
